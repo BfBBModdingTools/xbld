@@ -1,0 +1,12 @@
+[package]
+name = "bfbb_linker"
+version = "0.1.0"
+authors = ["Steven Casper <sebastiancasper3@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+goblin="0.4.0"
+bitflags="1.2.1"
+byteorder = "1"
