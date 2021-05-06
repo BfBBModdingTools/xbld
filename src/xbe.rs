@@ -18,7 +18,7 @@ pub struct XBE {
 }
 
 impl XBE {
-    pub fn new<P>(path: P) -> Self
+    pub fn from_path<P>(path: P) -> Self
     where
         P: AsRef<Path>,
     {
@@ -40,6 +40,10 @@ impl XBE {
                 round_to_next!(end, 0x20)
             }
         }
+    }
+
+    pub fn get_next_virtual_address_after(&self, after: u32) -> u32 {
+        round_to_next!(after, 0x20)
     }
 
     pub fn add_section(&mut self, section: Section) {
