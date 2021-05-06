@@ -18,6 +18,7 @@ use xbe::{Section, SectionFlags, XBE};
 //
 // Perform all relocations
 
+#[derive(Debug, Clone)]
 struct SectionInProgress<'a> {
     bytes: Vec<u8>,
     file_offset_start: HashMap<&'a str, u32>,
@@ -34,7 +35,8 @@ impl<'a> SectionInProgress<'a> {
     }
 
     fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
-        self.file_offset_start.insert(filename, bytes.len() as u32);
+        self.file_offset_start
+            .insert(filename, self.bytes.len() as u32);
         self.bytes.append(&mut bytes.to_owned());
     }
 }
@@ -45,7 +47,7 @@ fn tmptest() {
         &["bin/framehook_patch.o"],
         &["bin/loader.o", "bin/mod.o"],
         "bin/default.xbe",
-        "bin.output.xbe",
+        "bin/output.xbe",
     );
 }
 
@@ -53,6 +55,7 @@ pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_x
     let mut bytes = Vec::with_capacity(modnames.len());
     let mut coffs = Vec::with_capacity(modnames.len());
 
+    // Parse files
     // TODO: Write these as one loop? (lifetimes are tricky)
     for n in modnames.iter() {
         bytes.push(std::fs::read(n).expect("Could not read object file"));
@@ -89,7 +92,6 @@ pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_x
 
     // build symbol table
     let symbol_table = SymbolTable::from_section_map(&mut section_map, &coffs, modnames);
-    println!("{:#?}", symbol_table.0);
 
     // process relocations
     process_relocations(&symbol_table, &mut section_map, &bytes, &coffs, modnames);
@@ -101,7 +103,7 @@ pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_x
             flags: SectionFlags::PRELOAD
                 | match name {
                     ".mtext" => SectionFlags::EXECUTABLE,
-                    ".mdata" | ".mbss\0" => SectionFlags::WRITABLE,
+                    ".mdata" | ".mbss" => SectionFlags::WRITABLE,
                     _ => SectionFlags::PRELOAD, //No "zero" value
                 },
             virtual_size: sec.bytes.len() as u32,
@@ -112,6 +114,7 @@ pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_x
     xbe.write_to_file(output_xbe);
 }
 
+#[derive(Debug, Clone)]
 struct SectionBytes<'a> {
     text: Option<&'a [u8]>,
     data: Option<&'a [u8]>,
@@ -145,6 +148,7 @@ impl<'a> SectionBytes<'a> {
 }
 
 /// Maps from a given section name to it's section data
+#[derive(Debug, Clone)]
 struct SectionMap<'a>(HashMap<&'a str, SectionInProgress<'a>>);
 
 impl<'a> SectionMap<'a> {
@@ -186,6 +190,7 @@ impl<'a> SectionMap<'a> {
 
 /// Maps from a given symbol name to its virtual address
 // TODO: Remove heap allocation (String)
+#[derive(Debug, Clone)]
 struct SymbolTable(HashMap<String, u32>);
 
 impl SymbolTable {
@@ -297,12 +302,7 @@ fn process_relocations(
                 // find data to update
                 // TODO: This is assuming 32 bit relocations
                 // TODO: handle section_number -1 and 0
-                let sec_data = match &coff
-                    .sections
-                    .get(symbol.section_number as usize - 1)
-                    .unwrap()
-                    .name
-                {
+                let sec_data = match &section.name {
                     b".text\0\0\0" => section_map
                         .get_mut(".mtext")
                         .expect("Could not find section .mtext"),
@@ -318,6 +318,8 @@ fn process_relocations(
                     _ => continue,
                 };
 
+                // TODO: I'm pretty sure there's a bug here. We need to add the offset for this file
+                // TODO: Testing needed!
                 let d_start = sec_data.file_offset_start.get(file).unwrap() + reloc.virtual_address;
                 let mut cur = std::io::Cursor::new(&mut sec_data.bytes);
                 cur.set_position(d_start as u64);
