@@ -2,6 +2,14 @@ use std::path::Path;
 
 use bitflags::bitflags;
 
+macro_rules! round_to_next {
+    ($num:expr, $round_to:expr) => {{
+        let n = $num;
+        let to = $round_to;
+        n + ((to - n % to) % to)
+    }};
+}
+
 pub struct XBE {
     pub header: Header,
     pub sections: Vec<Section>,
@@ -29,7 +37,7 @@ impl XBE {
             None => 0,
             Some(s) => {
                 let end = s.virtual_address + s.virtual_size;
-                end + ((0x20 - end % 0x20) % 0x20)
+                round_to_next!(end, 0x20)
             }
         }
     }
@@ -70,7 +78,7 @@ impl XBE {
                 s.name.clone()
             })
             .collect();
-        section_names_size += (4 - section_names_size % 4) % 4;
+        section_names_size = round_to_next!(section_names_size, 4);
 
         // Size of sections headers plus size of head/tail reference pages
         let section_headers_size = self.sections.len() as u32 * 0x38;
@@ -118,9 +126,9 @@ impl XBE {
                     section_digest: [0u8; 0x14],
                 };
                 virtual_address += virtual_size;
-                virtual_address += (0x20 - virtual_address % 0x20) % 0x20;
+                virtual_address = round_to_next!(virtual_address, 0x20);
                 raw_address += raw_size;
-                raw_address += (0x1000 - raw_address % 0x1000) % 0x1000;
+                raw_address = round_to_next!(raw_address, 0x1000);
                 hdr
             })
             .collect();
@@ -174,7 +182,7 @@ impl XBE {
             + library_versions_size
             + debug_strings_size
             + logo_bitmap_size;
-        size_of_headers += (4 - size_of_headers % 4) % 4;
+        size_of_headers = round_to_next!(size_of_headers, 4);
 
         let image_header = raw::ImageHeader {
             magic_number: b"XBEH".to_owned(),
