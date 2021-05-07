@@ -7,7 +7,7 @@ use goblin::pe::Coff;
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
-use xbe::{Section, SectionFlags, XBE};
+use xbe::{Section, SectionFlags, Xbe};
 
 // The plan:
 //
@@ -81,7 +81,7 @@ pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_x
     let mut section_map = SectionMap::from_data(&bytes, &coffs, modnames);
 
     // Assign virtual addresses
-    let mut xbe = XBE::from_path(input_xbe);
+    let mut xbe = Xbe::from_path(input_xbe);
     let mut last_virtual_address = xbe.get_next_virtual_address();
 
     for (_, sec) in section_map.0.iter_mut() {
@@ -152,7 +152,7 @@ impl<'a> SectionBytes<'a> {
 struct SectionMap<'a>(HashMap<&'a str, SectionInProgress<'a>>);
 
 impl<'a> SectionMap<'a> {
-    pub fn from_data(bytes: &Vec<Vec<u8>>, coffs: &Vec<Coff>, files: &[&'a str]) -> Self {
+    pub fn from_data(bytes: &[Vec<u8>], coffs: &[Coff], files: &[&'a str]) -> Self {
         let mut section_map = HashMap::new();
         for ((bytes, coff), file) in bytes.iter().zip(coffs.iter()).zip(files.iter()) {
             // Extract section data from file
@@ -194,11 +194,7 @@ impl<'a> SectionMap<'a> {
 struct SymbolTable(HashMap<String, u32>);
 
 impl SymbolTable {
-    pub fn from_section_map(
-        section_map: &mut SectionMap,
-        coffs: &Vec<Coff>,
-        files: &[&str],
-    ) -> Self {
+    pub fn from_section_map(section_map: &mut SectionMap, coffs: &[Coff], files: &[&str]) -> Self {
         let mut symbol_table = HashMap::new();
         let section_map = &mut section_map.0;
         for (coff, file) in coffs.iter().zip(files.iter()) {
@@ -276,8 +272,8 @@ impl SymbolTable {
 fn process_relocations(
     symbol_table: &SymbolTable,
     section_map: &mut SectionMap,
-    bytes: &Vec<Vec<u8>>,
-    coffs: &Vec<Coff>,
+    bytes: &[Vec<u8>],
+    coffs: &[Coff],
     files: &[&str],
 ) {
     let symbol_table = &symbol_table.0;
