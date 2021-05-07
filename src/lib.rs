@@ -332,3 +332,33 @@ fn process_relocations(
         }
     }
 }
+
+mod tests {
+    #[test]
+    fn file_offsets() {
+        let bytes_a = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8];
+        let bytes_b = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8];
+        let mut section = crate::SectionInProgress::new();
+        section.add_bytes(&bytes_a, "bytesA");
+        section.add_bytes(&bytes_b, "bytesB");
+
+        assert_eq!(section.file_offset_start.len(), 2);
+        assert_eq!(*section.file_offset_start.get("bytesA").unwrap(), 0);
+        assert_eq!(*section.file_offset_start.get("bytesB").unwrap(), 12);
+    }
+
+    #[test]
+    fn add_bytes() {
+        let bytes_a = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8];
+        let bytes_b = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8];
+        let mut combined = bytes_a.clone();
+        combined.append(&mut bytes_b.clone());
+
+        let mut section = crate::SectionInProgress::new();
+        section.add_bytes(&bytes_a, "bytesA");
+        section.add_bytes(&bytes_b, "bytesB");
+
+        assert_eq!(section.bytes.len(), 20);
+        assert_eq!(section.bytes, combined);
+    }
+}
