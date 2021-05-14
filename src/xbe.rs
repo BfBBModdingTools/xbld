@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{ops::Range, path::Path};
 
 use bitflags::bitflags;
 
@@ -10,15 +10,15 @@ macro_rules! round_to_next {
     }};
 }
 
-pub struct XBE {
+pub struct Xbe {
     pub header: Header,
     pub sections: Vec<Section>,
     library_versions: Vec<raw::LibraryVersion>,
     logo_bitmap: raw::LogoBitmap,
 }
 
-impl XBE {
-    pub fn new<P>(path: P) -> Self
+impl Xbe {
+    pub fn from_path<P>(path: P) -> Self
     where
         P: AsRef<Path>,
     {
@@ -42,11 +42,54 @@ impl XBE {
         }
     }
 
+    pub fn get_next_virtual_address_after(&self, after: u32) -> u32 {
+        round_to_next!(after, 0x20)
+    }
+
     pub fn add_section(&mut self, section: Section) {
         self.sections.push(section);
     }
 
-    fn convert_to_raw(&self) -> raw::XBE {
+    #[allow(dead_code)]
+    pub fn get_bytes(&self, virtual_range: Range<u32>) -> Result<&[u8], String> {
+        let section = self.sections.iter().find(|s| {
+            s.virtual_address <= virtual_range.start
+                && s.virtual_address + s.virtual_size >= virtual_range.end
+        });
+
+        if section.is_none() {
+            return Err(format!(
+                "Virtual address range [{},{}) is not used in this XBE",
+                virtual_range.start, virtual_range.end
+            ));
+        }
+        let section = section.unwrap();
+
+        let start = (virtual_range.start - section.virtual_address) as usize;
+        let end = (virtual_range.end - section.virtual_address) as usize;
+        Ok(&section.data[start..end])
+    }
+
+    pub fn get_bytes_mut(&mut self, virtual_range: Range<u32>) -> Result<&mut [u8], String> {
+        let section = self.sections.iter_mut().find(|s| {
+            s.virtual_address <= virtual_range.start
+                && s.virtual_address + s.virtual_size >= virtual_range.end
+        });
+
+        if section.is_none() {
+            return Err(format!(
+                "Virtual address range [{},{}) is not used in this XBE",
+                virtual_range.start, virtual_range.end
+            ));
+        }
+        let section = section.unwrap();
+
+        let start = (virtual_range.start - section.virtual_address) as usize;
+        let end = (virtual_range.end - section.virtual_address) as usize;
+        Ok(&mut section.data[start..end])
+    }
+
+    fn convert_to_raw(&self) -> raw::Xbe {
         let base_address = 0x10000;
         let image_header_size = 0x184;
         let certificate = raw::Certificate {
@@ -101,9 +144,9 @@ impl XBE {
                 let raw_size = s.data.len() as u32;
                 let hdr = raw::SectionHeader {
                     section_flags: s.flags.bits,
-                    virtual_address: virtual_address,
+                    virtual_address,
                     virtual_size,
-                    raw_address: raw_address,
+                    raw_address,
                     raw_size,
                     section_name_address: base_address
                         + image_header_size
@@ -242,7 +285,7 @@ impl XBE {
             logo_bitmap_size,
         };
 
-        raw::XBE {
+        raw::Xbe {
             image_header,
             certificate,
             section_headers,
@@ -252,11 +295,11 @@ impl XBE {
             debug_filename: self.header.debug_filename.clone(),
             debug_unicode_filename: self.header.debug_unicode_filename.clone(),
             logo_bitmap: self.logo_bitmap.clone(),
-            sections: sections,
+            sections,
         }
     }
 
-    fn from_raw(xbe: &raw::XBE) -> Self {
+    fn from_raw(xbe: &raw::Xbe) -> Self {
         let pe = PE {
             stack_commit: xbe.image_header.pe_stack_commit,
             heap_reserve: xbe.image_header.pe_heap_reserve,
@@ -297,7 +340,7 @@ impl XBE {
             })
             .collect();
 
-        XBE {
+        Xbe {
             header,
             sections,
             library_versions: xbe.library_versions.clone(),
@@ -399,7 +442,7 @@ mod raw {
 
     use byteorder::{ReadBytesExt, WriteBytesExt, LE};
     #[derive(Default, Debug)]
-    pub struct XBE {
+    pub struct Xbe {
         pub image_header: ImageHeader,
         pub certificate: Certificate,
         pub section_headers: Vec<SectionHeader>,
@@ -412,7 +455,7 @@ mod raw {
         pub sections: Vec<Section>,
     }
 
-    impl XBE {
+    impl Xbe {
         /// Serialize this XBE object to a valid .xbe executable
         ///
         /// Note: this currently results in an xbe file with less ending padding
@@ -468,7 +511,7 @@ mod raw {
                 (self.image_header.debug_pathname_address - self.image_header.base_address)
                     as usize,
             );
-            img_hdr_v.write(self.debug_pathname.as_bytes())?;
+            img_hdr_v.write_all(self.debug_pathname.as_bytes())?;
 
             // Write bitmap
             pad_to_exact(
@@ -505,7 +548,7 @@ mod raw {
             let mut v = vec![];
 
             for n in self.section_names.iter() {
-                v.write(&n.as_bytes())?;
+                v.write_all(&n.as_bytes())?;
             }
 
             Ok(v)
@@ -541,15 +584,7 @@ mod raw {
             for i in 0..self.section_headers.len() {
                 sorted_headers.push((&self.section_headers[i], &self.sections[i]));
             }
-            sorted_headers.sort_by(|a, b| {
-                if a.0.raw_address > b.0.raw_address {
-                    std::cmp::Ordering::Greater
-                } else if a.0.raw_address == b.0.raw_address {
-                    std::cmp::Ordering::Equal
-                } else {
-                    std::cmp::Ordering::Less
-                }
-            });
+            sorted_headers.sort_by(|a, b| a.0.raw_address.cmp(&b.0.raw_address));
 
             for (_, sec) in sorted_headers {
                 // let s = &self.sections[i];
@@ -600,8 +635,8 @@ mod raw {
         fn serialize(&self) -> Result<Vec<u8>> {
             let mut v = vec![];
 
-            v.write(&self.magic_number)?;
-            v.write(&self.digital_signature)?;
+            v.write_all(&self.magic_number)?;
+            v.write_all(&self.digital_signature)?;
             v.write_u32::<LE>(self.base_address)?;
             v.write_u32::<LE>(self.size_of_headers)?;
             v.write_u32::<LE>(self.size_of_image)?;
@@ -704,17 +739,17 @@ mod raw {
             v.write_u32::<LE>(self.size)?;
             v.write_u32::<LE>(self.time_date)?;
             v.write_u32::<LE>(self.title_id)?;
-            v.write(&self.title_name)?;
-            v.write(&self.alternate_title_ids)?;
+            v.write_all(&self.title_name)?;
+            v.write_all(&self.alternate_title_ids)?;
             v.write_u32::<LE>(self.allowed_media)?;
             v.write_u32::<LE>(self.game_region)?;
             v.write_u32::<LE>(self.game_ratings)?;
             v.write_u32::<LE>(self.disk_number)?;
             v.write_u32::<LE>(self.version)?;
-            v.write(&self.lan_key)?;
-            v.write(&self.signature_key)?;
-            v.write(&self.alternate_signature_keys)?;
-            v.write(&self.reserved)?;
+            v.write_all(&self.lan_key)?;
+            v.write_all(&self.signature_key)?;
+            v.write_all(&self.alternate_signature_keys)?;
+            v.write_all(&self.reserved)?;
 
             Ok(v)
         }
@@ -779,7 +814,7 @@ mod raw {
             v.write_u32::<LE>(self.section_name_reference_count)?;
             v.write_u32::<LE>(self.head_shared_page_reference_count_address)?;
             v.write_u32::<LE>(self.tail_shared_page_reference_count_address)?;
-            v.write(&self.section_digest)?;
+            v.write_all(&self.section_digest)?;
 
             Ok(v)
         }
@@ -798,7 +833,7 @@ mod raw {
         fn serialize(&self) -> Result<Vec<u8>> {
             let mut v = vec![];
 
-            v.write(&self.library_name)?;
+            v.write_all(&self.library_name)?;
             v.write_u16::<LE>(self.major_version)?;
             v.write_u16::<LE>(self.minor_version)?;
             v.write_u16::<LE>(self.build_version)?;
@@ -810,7 +845,7 @@ mod raw {
 
     #[allow(dead_code)]
     #[derive(Debug, Default)]
-    struct TLS {
+    struct Tls {
         data_start_address: u32,
         data_end_address: u32,
         tls_index_address: u32,
@@ -830,7 +865,7 @@ mod raw {
         }
     }
 
-    pub fn load_xbe(mut file: File) -> std::io::Result<XBE> {
+    pub fn load_xbe(mut file: File) -> std::io::Result<Xbe> {
         // let mut xbe = XBE::default();
 
         // Read header data
@@ -859,7 +894,7 @@ mod raw {
 
         // Read library versions
         let library_version = load_library_versions(&mut file, &image_header)?;
-        Ok(XBE {
+        Ok(Xbe {
             image_header,
             certificate,
             section_headers,
@@ -914,11 +949,12 @@ mod raw {
         let start = (header.certificate_address - header.base_address) as u64;
         file.seek(SeekFrom::Start(start))?;
 
-        let mut certificate = Certificate::default();
-
-        certificate.size = file.read_u32::<LE>()?;
-        certificate.time_date = file.read_u32::<LE>()?;
-        certificate.title_id = file.read_u32::<LE>()?;
+        let mut certificate = Certificate {
+            size: file.read_u32::<LE>()?,
+            time_date: file.read_u32::<LE>()?,
+            title_id: file.read_u32::<LE>()?,
+            ..Default::default()
+        };
         file.read_exact(&mut certificate.title_name)?;
         file.read_exact(&mut certificate.alternate_title_ids)?;
         certificate.allowed_media = file.read_u32::<LE>()?;
@@ -947,17 +983,18 @@ mod raw {
 
         let mut headers = Vec::with_capacity(image_header.number_of_sections as usize);
         for _ in 0..image_header.number_of_sections {
-            let mut h = SectionHeader::default();
-
-            h.section_flags = file.read_u32::<LE>()?;
-            h.virtual_address = file.read_u32::<LE>()?;
-            h.virtual_size = file.read_u32::<LE>()?;
-            h.raw_address = file.read_u32::<LE>()?;
-            h.raw_size = file.read_u32::<LE>()?;
-            h.section_name_address = file.read_u32::<LE>()?;
-            h.section_name_reference_count = file.read_u32::<LE>()?;
-            h.head_shared_page_reference_count_address = file.read_u32::<LE>()?;
-            h.tail_shared_page_reference_count_address = file.read_u32::<LE>()?;
+            let mut h = SectionHeader {
+                section_flags: file.read_u32::<LE>()?,
+                virtual_address: file.read_u32::<LE>()?,
+                virtual_size: file.read_u32::<LE>()?,
+                raw_address: file.read_u32::<LE>()?,
+                raw_size: file.read_u32::<LE>()?,
+                section_name_address: file.read_u32::<LE>()?,
+                section_name_reference_count: file.read_u32::<LE>()?,
+                head_shared_page_reference_count_address: file.read_u32::<LE>()?,
+                tail_shared_page_reference_count_address: file.read_u32::<LE>()?,
+                ..Default::default()
+            };
             file.read_exact(&mut h.section_digest)?;
 
             headers.push(h);
@@ -969,7 +1006,7 @@ mod raw {
     fn load_section_names(
         file: &mut File,
         image_header: &ImageHeader,
-        sections_headers: &Vec<SectionHeader>,
+        sections_headers: &[SectionHeader],
     ) -> Result<Vec<String>> {
         let mut strings = vec![];
 
