@@ -6,7 +6,7 @@ use std::{
     io::{Cursor, Write},
 };
 
-use goblin::pe::{self, section_table::SectionTable};
+use goblin::pe::{self, section_table::SectionTable, symbol::Symbol};
 use goblin::pe::{relocation::Relocation, Coff};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
@@ -79,7 +79,7 @@ struct Patch<'a> {
 }
 
 impl Patch<'_> {
-    fn apply(&self, xbe: &mut Xbe, symbol_table: &SymbolTable) {
+    pub fn apply(&self, xbe: &mut Xbe, symbol_table: &SymbolTable) {
         // Process Patch Coff (symbols have already been read)
         let mut section_map = SectionMap::from_data(std::slice::from_ref(self.patchfile));
         //TODO: This assumes patch is at beginning of .text
@@ -95,29 +95,8 @@ impl Patch<'_> {
             .get_bytes_mut(self.virtual_address..self.virtual_address + 5)
             .unwrap();
 
-        let (_, _, start_symbol) = self
-            .patchfile
-            .coff
-            .symbols
-            .iter()
-            .find(|(_, _, s)| {
-                s.name(&self.patchfile.coff.strings)
-                    .expect("Patch Start Symbol not present in patch file.")
-                    == self.start_symbol_name
-            })
-            .expect("Patch Start symbol not present in patch file.");
-
-        let (_, _, end_symbol) = self
-            .patchfile
-            .coff
-            .symbols
-            .iter()
-            .find(|(_, _, s)| {
-                s.name(&self.patchfile.coff.strings)
-                    .expect("Patch End Symbol not present in patch file.")
-                    == self.end_symbol_name
-            })
-            .expect("Patch End symbol not present in patch file.");
+        let start_symbol = self.find_symbol(self.start_symbol_name);
+        let end_symbol = self.find_symbol(self.end_symbol_name);
 
         if start_symbol.section_number != end_symbol.section_number {
             panic!("Patch start and end symbol are not in the same section");
@@ -129,6 +108,27 @@ impl Patch<'_> {
 
         let mut c = Cursor::new(xbe_bytes);
         c.write_all(patch_bytes).expect("Failed to apply patch");
+    }
+
+    fn find_symbol(&self, name: &str) -> Symbol {
+        let fail = || -> ! {
+            panic!(
+                "Patch Symbol '{}' is not present in patch file '{}'.",
+                self.start_symbol_name, self.patchfile.filename
+            );
+        };
+
+        self.patchfile
+            .coff
+            .symbols
+            .iter()
+            .find(|(_, _, s)| {
+                s.name(&self.patchfile.coff.strings)
+                    .unwrap_or_else(|_| fail())
+                    == name
+            })
+            .unwrap_or_else(|| fail())
+            .2
     }
 }
 
