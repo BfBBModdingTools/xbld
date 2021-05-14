@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{ops::Range, path::Path};
 
 use bitflags::bitflags;
 
@@ -48,6 +48,45 @@ impl Xbe {
 
     pub fn add_section(&mut self, section: Section) {
         self.sections.push(section);
+    }
+
+    #[allow(dead_code)]
+    pub fn get_bytes(&self, virtual_range: Range<u32>) -> Result<&[u8], String> {
+        let section = self.sections.iter().find(|s| {
+            s.virtual_address <= virtual_range.start
+                && s.virtual_address + s.virtual_size >= virtual_range.end
+        });
+
+        if section.is_none() {
+            return Err(format!(
+                "Virtual address range [{},{}) is not used in this XBE",
+                virtual_range.start, virtual_range.end
+            ));
+        }
+        let section = section.unwrap();
+
+        let start = (virtual_range.start - section.virtual_address) as usize;
+        let end = (virtual_range.end - section.virtual_address) as usize;
+        Ok(&section.data[start..end])
+    }
+
+    pub fn get_bytes_mut(&mut self, virtual_range: Range<u32>) -> Result<&mut [u8], String> {
+        let section = self.sections.iter_mut().find(|s| {
+            s.virtual_address <= virtual_range.start
+                && s.virtual_address + s.virtual_size >= virtual_range.end
+        });
+
+        if section.is_none() {
+            return Err(format!(
+                "Virtual address range [{},{}) is not used in this XBE",
+                virtual_range.start, virtual_range.end
+            ));
+        }
+        let section = section.unwrap();
+
+        let start = (virtual_range.start - section.virtual_address) as usize;
+        let end = (virtual_range.end - section.virtual_address) as usize;
+        Ok(&mut section.data[start..end])
     }
 
     fn convert_to_raw(&self) -> raw::Xbe {

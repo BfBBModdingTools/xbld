@@ -1,9 +1,13 @@
 mod xbe;
 
-use std::collections::hash_map::HashMap;
+use itertools::Itertools;
+use std::{
+    collections::hash_map::HashMap,
+    io::{Cursor, Write},
+};
 
-use goblin::pe;
-use goblin::pe::Coff;
+use goblin::pe::{self, section_table::SectionTable};
+use goblin::pe::{relocation::Relocation, Coff};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
@@ -51,19 +55,103 @@ fn tmptest() {
     );
 }
 
-pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_xbe: &str) {
-    let mut bytes = Vec::with_capacity(modnames.len());
-    let mut coffs = Vec::with_capacity(modnames.len());
+struct ObjectFile<'a> {
+    bytes: &'a [u8],
+    coff: Coff<'a>,
+    filename: &'a str,
+}
 
-    // Parse files
-    // TODO: Write these as one loop? (lifetimes are tricky)
-    for n in modnames.iter() {
-        bytes.push(std::fs::read(n).expect("Could not read object file"));
+impl<'a> ObjectFile<'a> {
+    fn new(bytes: &'a [u8], filename: &'a str) -> Self {
+        Self {
+            bytes,
+            coff: Coff::parse(&bytes).expect("msg"),
+            filename,
+        }
     }
+}
 
-    for b in bytes.iter() {
-        coffs.push(Coff::parse(b).expect("Could not parse file (Make sure COFF format is used)"));
+struct Patch<'a> {
+    patchfile: &'a ObjectFile<'a>,
+    start_symbol_name: &'a str,
+    end_symbol_name: &'a str,
+    virtual_address: u32,
+}
+
+impl Patch<'_> {
+    fn apply(&self, xbe: &mut Xbe, symbol_table: &SymbolTable) {
+        // Process Patch Coff (symbols have already been read)
+        let mut section_map = SectionMap::from_data(std::slice::from_ref(self.patchfile));
+        //TODO: This assumes patch is at beginning of .text
+        section_map.0.get_mut(".mtext").unwrap().virtual_address = self.virtual_address;
+
+        process_relocations(
+            symbol_table,
+            &mut section_map,
+            std::slice::from_ref(self.patchfile),
+        );
+
+        let xbe_bytes = xbe
+            .get_bytes_mut(self.virtual_address..self.virtual_address + 5)
+            .unwrap();
+
+        let (_, _, start_symbol) = self
+            .patchfile
+            .coff
+            .symbols
+            .iter()
+            .find(|(_, _, s)| {
+                s.name(&self.patchfile.coff.strings)
+                    .expect("Patch Start Symbol not present in patch file.")
+                    == self.start_symbol_name
+            })
+            .expect("Patch Start symbol not present in patch file.");
+
+        let (_, _, end_symbol) = self
+            .patchfile
+            .coff
+            .symbols
+            .iter()
+            .find(|(_, _, s)| {
+                s.name(&self.patchfile.coff.strings)
+                    .expect("Patch End Symbol not present in patch file.")
+                    == self.end_symbol_name
+            })
+            .expect("Patch End symbol not present in patch file.");
+
+        if start_symbol.section_number != end_symbol.section_number {
+            panic!("Patch start and end symbol are not in the same section");
+        }
+
+        // TODO: HARDEDCODED BADD
+        let patch_bytes = &section_map.0.get(".mtext").unwrap().bytes
+            [start_symbol.value as usize..end_symbol.value as usize];
+
+        let mut c = Cursor::new(xbe_bytes);
+        c.write_all(patch_bytes).expect("Failed to apply patch");
     }
+}
+
+pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xbe: &str) {
+    let patchbytes: Vec<Vec<u8>> = patchfiles
+        .iter()
+        .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
+        .collect();
+    let patches: Vec<ObjectFile> = patchfiles
+        .iter()
+        .zip(patchbytes.iter())
+        .map(|(f, b)| ObjectFile::new(b, f))
+        .collect();
+
+    let modbytes: Vec<Vec<u8>> = modfiles
+        .iter()
+        .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
+        .collect();
+    let mods: Vec<ObjectFile> = modfiles
+        .iter()
+        .zip(modbytes.iter())
+        .map(|(f, b)| ObjectFile::new(b, f))
+        .collect();
 
     // Need to:
     //  - separate patch files from other object files
@@ -78,7 +166,7 @@ pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_x
     //  - insert sections into xbe
 
     // combine sections
-    let mut section_map = SectionMap::from_data(&bytes, &coffs, modnames);
+    let mut section_map = SectionMap::from_data(&mods);
 
     // Assign virtual addresses
     let mut xbe = Xbe::from_path(input_xbe);
@@ -91,12 +179,43 @@ pub fn inject(_patchfiles: &[&str], modnames: &[&str], input_xbe: &str, output_x
     }
 
     // build symbol table
-    let symbol_table = SymbolTable::from_section_map(&mut section_map, &coffs, modnames);
+    let mut symbol_table = SymbolTable::new();
+    for obj in patches.iter().chain(mods.iter()) {
+        symbol_table.extract_symbols(&section_map, obj);
+    }
+    println!("{:#?}", &symbol_table);
 
     // process relocations
-    process_relocations(&symbol_table, &mut section_map, &bytes, &coffs, modnames);
+    process_relocations(&symbol_table, &mut section_map, &mods);
+
+    let mut patch_sections = SectionMap::from_data(&patches);
+    println!("{:#?}", &patch_sections);
+    process_relocations(&symbol_table, &mut patch_sections, &patches);
+
+    // read patch config
+    let config =
+        String::from_utf8(std::fs::read("bin/patch.conf").expect("Could not read config file."))
+            .expect("Could not read config file.");
+    let patches: Vec<Patch> = config
+        .split(' ')
+        .tuples()
+        .zip(patches.iter())
+        .map(
+            |((start_symbol_name, end_symbol_name, addr), patchfile)| Patch {
+                patchfile,
+                start_symbol_name,
+                end_symbol_name,
+                virtual_address: addr.parse().expect("Malformed address in config"),
+            },
+        )
+        .collect();
+
+    for patch in &patches {
+        patch.apply(&mut xbe, &symbol_table);
+    }
 
     // insert sections into XBE
+    // TODO: Sort by virtual address (iterating over HashMap gives non-deterministic results)
     for (name, sec) in section_map.0 {
         xbe.add_section(Section {
             name: name.to_owned() + "\0",
@@ -123,7 +242,7 @@ struct SectionBytes<'a> {
 }
 
 impl<'a> SectionBytes<'a> {
-    pub fn from_coff(coff: &'a Coff, coff_bytes: &'a [u8]) -> Self {
+    pub fn from_obj(file: &'a ObjectFile) -> Self {
         let mut s = SectionBytes {
             text: None,
             data: None,
@@ -131,10 +250,15 @@ impl<'a> SectionBytes<'a> {
             rdata: None,
         };
 
-        for sec in coff.sections.iter().filter(|s| s.size_of_raw_data != 0) {
+        for sec in file
+            .coff
+            .sections
+            .iter()
+            .filter(|s| s.size_of_raw_data != 0)
+        {
             let start = sec.pointer_to_raw_data as usize;
             let end = start + sec.size_of_raw_data as usize;
-            let data = &coff_bytes[start..end];
+            let data = &file.bytes[start..end];
             match &sec.name {
                 b".text\0\0\0" => s.text = Some(data),
                 b".data\0\0\0" => s.data = Some(data),
@@ -152,36 +276,48 @@ impl<'a> SectionBytes<'a> {
 struct SectionMap<'a>(HashMap<&'a str, SectionInProgress<'a>>);
 
 impl<'a> SectionMap<'a> {
-    pub fn from_data(bytes: &[Vec<u8>], coffs: &[Coff], files: &[&'a str]) -> Self {
+    pub fn from_data(files: &'a [ObjectFile]) -> Self {
         let mut section_map = HashMap::new();
-        for ((bytes, coff), file) in bytes.iter().zip(coffs.iter()).zip(files.iter()) {
+        for file in files.iter() {
             // Extract section data from file
-            let section_bytes = SectionBytes::from_coff(coff, bytes);
+            let section_bytes = SectionBytes::from_obj(file);
 
             // Combine sections from all files
             if let Some(b) = section_bytes.text {
                 if !section_map.contains_key(".mtext") {
                     section_map.insert(".mtext", SectionInProgress::new());
                 }
-                section_map.get_mut(".mtext").unwrap().add_bytes(b, file);
+                section_map
+                    .get_mut(".mtext")
+                    .unwrap()
+                    .add_bytes(b, file.filename);
             }
             if let Some(b) = section_bytes.data {
                 if !section_map.contains_key(".mdata") {
                     section_map.insert(".mdata", SectionInProgress::new());
                 }
-                section_map.get_mut(".mdata").unwrap().add_bytes(b, file);
+                section_map
+                    .get_mut(".mdata")
+                    .unwrap()
+                    .add_bytes(b, file.filename);
             }
             if let Some(b) = section_bytes.bss {
                 if !section_map.contains_key(".mbss") {
                     section_map.insert(".mbss", SectionInProgress::new());
                 }
-                section_map.get_mut(".mbss").unwrap().add_bytes(b, file);
+                section_map
+                    .get_mut(".mbss")
+                    .unwrap()
+                    .add_bytes(b, file.filename);
             }
             if let Some(b) = section_bytes.rdata {
                 if !section_map.contains_key(".mrdata") {
                     section_map.insert(".mrdata", SectionInProgress::new());
                 }
-                section_map.get_mut(".mrdata").unwrap().add_bytes(b, file);
+                section_map
+                    .get_mut(".mrdata")
+                    .unwrap()
+                    .add_bytes(b, file.filename);
             }
         }
         Self(section_map)
@@ -194,139 +330,239 @@ impl<'a> SectionMap<'a> {
 struct SymbolTable(HashMap<String, u32>);
 
 impl SymbolTable {
-    pub fn from_section_map(section_map: &mut SectionMap, coffs: &[Coff], files: &[&str]) -> Self {
-        let mut symbol_table = HashMap::new();
-        let section_map = &mut section_map.0;
-        for (coff, file) in coffs.iter().zip(files.iter()) {
-            for (_, _, symbol) in coff.symbols.iter() {
-                // Get section data from table
-                let sec_data = match coff
-                    .sections
-                    .get(symbol.section_number as usize - 1)
-                    .and_then(|s| s.name().ok())
-                {
-                    Some(".text") => section_map
-                        .get_mut(".mtext")
-                        .expect("Could not find section .mtext"),
-                    Some(".data") => section_map
-                        .get_mut(".mdata")
-                        .expect("Could not find section .mdata"),
-                    Some(".bss") => section_map
-                        .get_mut(".mbss")
-                        .expect("Could not find section .mbss"),
-                    Some(".mrdata") => section_map
-                        .get_mut(".mrdata")
-                        .expect("Could not find section .mrdata"),
-                    _ => continue,
-                };
+    fn new() -> Self {
+        Self(HashMap::new())
+    }
 
-                match symbol.storage_class {
-                    pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if symbol.typ == 0x20 => {
-                        if symbol.section_number == 0 {
-                            // External function
-                            continue;
-                        }
-                        symbol_table.insert(
-                            symbol.name(&coff.strings).unwrap().to_owned(),
-                            match sec_data.file_offset_start.get(file) {
-                                Some(addr) => *addr + symbol.value,
-                                None => continue,
-                            },
-                        );
-                    }
-                    pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if symbol.section_number > 0 => {
-                        symbol_table.insert(
-                            symbol.name(&coff.strings).unwrap().to_owned(),
-                            match sec_data.file_offset_start.get(file) {
-                                Some(addr) => *addr + symbol.value,
-                                None => continue,
-                            },
-                        );
-                    }
-                    pe::symbol::IMAGE_SYM_CLASS_EXTERNAL => {
-                        // TODO: Check if this is a link-time symbol necessary for modloader
-                        // functionality.
+    fn extract_symbols(&mut self, section_map: &SectionMap, obj: &ObjectFile) {
+        for (_index, _name, sym) in obj.coff.symbols.iter() {
+            if sym.section_number < 1 {
+                continue;
+            }
 
-                        // External symbol should be declared in a future file
-                        // TODO: Keep up with unresolved externals for errors?
-                        continue;
-                    }
-                    pe::symbol::IMAGE_SYM_CLASS_STATIC => {
-                        symbol_table.insert(
-                            symbol.name(&coff.strings).unwrap().to_owned(),
-                            match sec_data.file_offset_start.get(file) {
-                                Some(addr) => *addr,
-                                None => continue,
-                            },
-                        );
-                    }
-                    pe::symbol::IMAGE_SYM_CLASS_FILE => continue,
-                    _ => todo!("storage_class {} not implemented", symbol.storage_class),
+            // Get section data from table
+            let sec_data = match obj
+                .coff
+                .sections
+                .get(sym.section_number as usize - 1)
+                .and_then(|s| s.name().ok())
+            {
+                Some(".text") => section_map
+                    .0
+                    .get(".mtext")
+                    .expect("Could not find section .mtext"),
+                Some(".data") => section_map
+                    .0
+                    .get(".mdata")
+                    .expect("Could not find section .mdata"),
+                Some(".bss") => section_map
+                    .0
+                    .get(".mbss")
+                    .expect("Could not find section .mbss"),
+                Some(".mrdata") => section_map
+                    .0
+                    .get(".mrdata")
+                    .expect("Could not find section .mrdata"),
+                _ => continue,
+            };
+
+            match sym.storage_class {
+                pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.typ == 0x20 => {
+                    self.0.insert(
+                        sym.name(&obj.coff.strings).unwrap().to_owned(),
+                        match sec_data.file_offset_start.get(obj.filename) {
+                            Some(addr) => *addr + sym.value + sec_data.virtual_address,
+                            None => {
+                                let patch_conf =
+                                    String::from_utf8(std::fs::read("bin/patch.conf").unwrap())
+                                        .unwrap();
+                                let mut split = patch_conf.split(' ');
+                                let patchname = split.next().unwrap();
+                                //skip end symbol
+                                split.next();
+                                let address: u32 = split.next().unwrap().parse().unwrap();
+
+                                if sym.name(&obj.coff.strings).unwrap() == patchname {
+                                    address
+                                } else {
+                                    continue;
+                                }
+                            }
+                        },
+                    );
                 }
+                pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.section_number > 0 => {
+                    self.0.insert(
+                        sym.name(&obj.coff.strings).unwrap().to_owned(),
+                        match sec_data.file_offset_start.get(obj.filename) {
+                            Some(addr) => *addr + sym.value + sec_data.virtual_address,
+                            None => continue,
+                        },
+                    );
+                }
+                pe::symbol::IMAGE_SYM_CLASS_EXTERNAL => {
+                    // TODO: Check if this is a link-time symbol necessary for modloader
+                    // functionality.
+
+                    // External symbol should be declared in a future file
+                    // TODO: Keep up with unresolved externals for errors?
+                    continue;
+                }
+                pe::symbol::IMAGE_SYM_CLASS_STATIC => {
+                    self.0.insert(
+                        sym.name(&obj.coff.strings).unwrap().to_owned(),
+                        match sec_data.file_offset_start.get(obj.filename) {
+                            Some(addr) => *addr + sec_data.virtual_address,
+                            None => continue,
+                        },
+                    );
+                }
+                pe::symbol::IMAGE_SYM_CLASS_FILE => continue,
+                _ => todo!("storage_class {} not implemented", sym.storage_class),
             }
         }
-        Self(symbol_table)
     }
 }
 
 fn process_relocations(
     symbol_table: &SymbolTable,
     section_map: &mut SectionMap,
-    bytes: &[Vec<u8>],
-    coffs: &[Coff],
-    files: &[&str],
+    files: &[ObjectFile],
 ) {
-    let symbol_table = &symbol_table.0;
-    let section_map = &mut section_map.0;
-    for ((bytes, coff), file) in bytes.iter().zip(coffs.iter()).zip(files.iter()) {
-        for section in coff.sections.iter() {
-            for reloc in section.relocations(&bytes).unwrap_or_default() {
+    for file in files.iter() {
+        for section in file.coff.sections.iter() {
+            for reloc in section.relocations(&file.bytes).unwrap_or_default() {
                 // find symbol
-                let symbol = match coff.symbols.get(reloc.symbol_table_index as usize) {
-                    None => continue,
-                    Some(symbol) => symbol.1,
-                };
+                println!("{:#?}", (&reloc, &file.filename));
 
-                let symbol_name = symbol.name(&coff.strings).unwrap();
+                // We are assuming i386 relocations only (Which is fine for Xbox)
+                match reloc.typ {
+                    goblin::pe::relocation::IMAGE_REL_I386_DIR32 => {
+                        relocation_dir32(file, &reloc, section, symbol_table, section_map)
+                    }
 
-                // Find virtual address of symbol
-                let symb_addr = match symbol_table.get(symbol_name) {
-                    Some(addr) => *addr,
-                    _ => continue,
-                };
-
-                // find data to update
-                // TODO: This is assuming 32 bit relocations
-                // TODO: handle section_number -1 and 0
-                let sec_data = match &section.name {
-                    b".text\0\0\0" => section_map
-                        .get_mut(".mtext")
-                        .expect("Could not find section .mtext"),
-                    b".data\0\0\0" => section_map
-                        .get_mut(".mdata")
-                        .expect("Could not find section .mdata"),
-                    b".bss\0\0\0\0" => section_map
-                        .get_mut(".mbss")
-                        .expect("Could not find section .mbss"),
-                    b".rdata\0\0" => section_map
-                        .get_mut(".mrdata")
-                        .expect("Could not find section .mrdata"),
-                    _ => continue,
-                };
-
-                // TODO: I'm pretty sure there's a bug here. We need to add the offset for this file
-                // TODO: Testing needed!
-                let d_start = sec_data.file_offset_start.get(file).unwrap() + reloc.virtual_address;
-                let mut cur = std::io::Cursor::new(&mut sec_data.bytes);
-                cur.set_position(d_start as u64);
-                let offset = cur.read_u32::<LE>().unwrap();
-                cur.set_position(d_start as u64);
-
-                // update data
-                cur.write_u32::<LE>(symb_addr + offset).unwrap();
+                    goblin::pe::relocation::IMAGE_REL_I386_REL32 => {
+                        relocation_rel32(file, &reloc, section, symbol_table, section_map)
+                    }
+                    //TODO: Support all relocations
+                    _ => panic!("relocation type {} not supported", reloc.typ),
+                }
             }
         }
     }
+}
+
+fn relocation_dir32(
+    file: &ObjectFile,
+    reloc: &Relocation,
+    section: &SectionTable,
+    symbol_table: &SymbolTable,
+    section_map: &mut SectionMap,
+) {
+    let symbol = match file.coff.symbols.get(reloc.symbol_table_index as usize) {
+        None => return,
+        Some(symbol) => symbol.1,
+    };
+
+    let symbol_name = symbol.name(&file.coff.strings).unwrap();
+
+    // Find virtual address of symbol
+    let symb_addr = match symbol_table.0.get(symbol_name) {
+        Some(addr) => *addr,
+        _ => return,
+    };
+
+    // find data to update
+    // TODO: This is assuming 32 bit relocations
+    // TODO: handle section_number -1 and 0
+    let sec_data = match &section.name {
+        b".text\0\0\0" => section_map
+            .0
+            .get_mut(".mtext")
+            .expect("Could not find section .mtext"),
+        b".data\0\0\0" => section_map
+            .0
+            .get_mut(".mdata")
+            .expect("Could not find section .mdata"),
+        b".bss\0\0\0\0" => section_map
+            .0
+            .get_mut(".mbss")
+            .expect("Could not find section .mbss"),
+        b".rdata\0\0" => section_map
+            .0
+            .get_mut(".mrdata")
+            .expect("Could not find section .mrdata"),
+        _ => return,
+    };
+
+    // TODO: I'm pretty sure there's a bug here. We need to add the offset for this file
+    // TODO: Testing needed!
+    let d_start = sec_data.file_offset_start.get(file.filename).unwrap() + reloc.virtual_address;
+    let mut cur = std::io::Cursor::new(&mut sec_data.bytes);
+    cur.set_position(d_start as u64);
+    let offset = cur.read_u32::<LE>().unwrap();
+    cur.set_position(d_start as u64);
+
+    // update data
+    cur.write_u32::<LE>(symb_addr + offset).unwrap();
+}
+
+fn relocation_rel32(
+    file: &ObjectFile,
+    reloc: &Relocation,
+    section: &SectionTable,
+    symbol_table: &SymbolTable,
+    section_map: &mut SectionMap,
+) {
+    let symbol = match file.coff.symbols.get(reloc.symbol_table_index as usize) {
+        None => return,
+        Some(symbol) => symbol.1,
+    };
+
+    let symbol_name = symbol.name(&file.coff.strings).unwrap();
+
+    // Find virtual address of symbol
+    let symb_addr = match symbol_table.0.get(symbol_name) {
+        Some(addr) => *addr,
+        _ => return,
+    };
+
+    // find data to update
+    let sec_data = match &section.name {
+        b".text\0\0\0" => section_map
+            .0
+            .get_mut(".mtext")
+            .expect("Could not find section .mtext"),
+        b".data\0\0\0" => section_map
+            .0
+            .get_mut(".mdata")
+            .expect("Could not find section .mdata"),
+        b".bss\0\0\0\0" => section_map
+            .0
+            .get_mut(".mbss")
+            .expect("Could not find section .mbss"),
+        b".rdata\0\0" => section_map
+            .0
+            .get_mut(".mrdata")
+            .expect("Could not find section .mrdata"),
+        _ => return,
+    };
+
+    let sec_addr = sec_data
+        .file_offset_start
+        .get(file.filename)
+        .expect("Failed to get file start information to process a relocation.")
+        + reloc.virtual_address;
+
+    let mut cur = std::io::Cursor::new(&mut sec_data.bytes);
+    cur.set_position(sec_addr as u64);
+    let target_address = cur.read_u32::<LE>().unwrap() + symb_addr;
+    let from_address = sec_addr + sec_data.virtual_address + 5;
+
+    // update data
+    cur.set_position(sec_addr as u64);
+    cur.write_u32::<LE>((target_address as i32 - from_address as i32) as u32)
+        .unwrap();
 }
 
 mod tests {
