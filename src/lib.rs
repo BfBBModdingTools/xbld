@@ -322,6 +322,26 @@ impl<'a> SectionMap<'a> {
         }
         Self(section_map)
     }
+
+    pub fn get(&self, section: &str) -> Option<&SectionInProgress> {
+        self.0.get(match section {
+            ".text" => ".mtext",
+            ".data" => ".mdata",
+            ".bss" => ".mbss",
+            ".rdata" => ".mrdata",
+            _ => return None,
+        })
+    }
+
+    pub fn get_mut(&mut self, section: &str) -> Option<&mut SectionInProgress<'a>> {
+        self.0.get_mut(match section {
+            ".text" => ".mtext",
+            ".data" => ".mdata",
+            ".bss" => ".mbss",
+            ".rdata" => ".mrdata",
+            _ => return None,
+        })
+    }
 }
 
 /// Maps from a given symbol name to its virtual address
@@ -341,29 +361,21 @@ impl SymbolTable {
             }
 
             // Get section data from table
-            let sec_data = match obj
-                .coff
-                .sections
-                .get(sym.section_number as usize - 1)
-                .and_then(|s| s.name().ok())
-            {
-                Some(".text") => section_map
-                    .0
-                    .get(".mtext")
-                    .expect("Could not find section .mtext"),
-                Some(".data") => section_map
-                    .0
-                    .get(".mdata")
-                    .expect("Could not find section .mdata"),
-                Some(".bss") => section_map
-                    .0
-                    .get(".mbss")
-                    .expect("Could not find section .mbss"),
-                Some(".mrdata") => section_map
-                    .0
-                    .get(".mrdata")
-                    .expect("Could not find section .mrdata"),
-                _ => continue,
+            let sec_data = match section_map.get(
+                obj.coff
+                    .sections
+                    .get(sym.section_number as usize - 1)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "No section for section number {} in file {}",
+                            sym.section_number, obj.filename
+                        )
+                    })
+                    .name()
+                    .unwrap(),
+            ) {
+                Some(data) => data,
+                None => continue,
             };
 
             match sym.storage_class {
@@ -475,25 +487,9 @@ fn relocation_dir32(
     // find data to update
     // TODO: This is assuming 32 bit relocations
     // TODO: handle section_number -1 and 0
-    let sec_data = match &section.name {
-        b".text\0\0\0" => section_map
-            .0
-            .get_mut(".mtext")
-            .expect("Could not find section .mtext"),
-        b".data\0\0\0" => section_map
-            .0
-            .get_mut(".mdata")
-            .expect("Could not find section .mdata"),
-        b".bss\0\0\0\0" => section_map
-            .0
-            .get_mut(".mbss")
-            .expect("Could not find section .mbss"),
-        b".rdata\0\0" => section_map
-            .0
-            .get_mut(".mrdata")
-            .expect("Could not find section .mrdata"),
-        _ => return,
-    };
+    let sec_data = section_map
+        .get_mut(section.name().unwrap())
+        .unwrap_or_else(|| panic!("Could not find section .m{}", section.name().unwrap()));
 
     // TODO: I'm pretty sure there's a bug here. We need to add the offset for this file
     // TODO: Testing needed!
@@ -528,25 +524,9 @@ fn relocation_rel32(
     };
 
     // find data to update
-    let sec_data = match &section.name {
-        b".text\0\0\0" => section_map
-            .0
-            .get_mut(".mtext")
-            .expect("Could not find section .mtext"),
-        b".data\0\0\0" => section_map
-            .0
-            .get_mut(".mdata")
-            .expect("Could not find section .mdata"),
-        b".bss\0\0\0\0" => section_map
-            .0
-            .get_mut(".mbss")
-            .expect("Could not find section .mbss"),
-        b".rdata\0\0" => section_map
-            .0
-            .get_mut(".mrdata")
-            .expect("Could not find section .mrdata"),
-        _ => return,
-    };
+    let sec_data = section_map
+        .get_mut(section.name().unwrap())
+        .unwrap_or_else(|| panic!("Could not find section .m{}", section.name().unwrap()));
 
     let sec_addr = sec_data
         .file_offset_start
