@@ -6,21 +6,11 @@ use std::{
     io::{Cursor, Write},
 };
 
-use goblin::pe::{self, section_table::SectionTable, symbol::Symbol};
-use goblin::pe::{relocation::Relocation, Coff};
+use goblin::pe::{self, relocation::Relocation, section_table::SectionTable, symbol::Symbol, Coff};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
 use xbe::{Section, SectionFlags, Xbe};
-
-// The plan:
-//
-// Determine virtual address start and size for every section
-//
-// Determine the virtual address of every symbol, stored in a
-// hashtable of symbol name and address
-//
-// Perform all relocations
 
 #[derive(Debug, Clone)]
 struct SectionInProgress<'a> {
@@ -55,7 +45,8 @@ impl<'a> ObjectFile<'a> {
     fn new(bytes: &'a [u8], filename: &'a str) -> Self {
         Self {
             bytes,
-            coff: Coff::parse(&bytes).expect("msg"),
+            coff: Coff::parse(&bytes)
+                .unwrap_or_else(|e| panic!("Failed to parse '{}'. {}", filename, e)),
             filename,
         }
     }
@@ -120,104 +111,6 @@ impl Patch<'_> {
             .unwrap_or_else(|| fail())
             .2
     }
-}
-
-pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xbe: &str) {
-    let patchbytes: Vec<Vec<u8>> = patchfiles
-        .iter()
-        .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
-        .collect();
-    let patches: Vec<ObjectFile> = patchfiles
-        .iter()
-        .zip(patchbytes.iter())
-        .map(|(f, b)| ObjectFile::new(b, f))
-        .collect();
-
-    let modbytes: Vec<Vec<u8>> = modfiles
-        .iter()
-        .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
-        .collect();
-    let mods: Vec<ObjectFile> = modfiles
-        .iter()
-        .zip(modbytes.iter())
-        .map(|(f, b)| ObjectFile::new(b, f))
-        .collect();
-
-    // Need to:
-    //  - separate patch files from other object files
-    //      - patch files should be able to reference symbols in mod files, but mod files
-    //        should never be able to use symbols in patch files
-    //  - combine .text, .data, .bss, .rdata of each non-patch file
-    //      - have start offsets within the sections for each file
-    //  - assign virtual address ranges to each combined section
-    //  - build combined symbol table
-    //  - process base game patch files
-    //  - process relocations within each file
-    //  - insert sections into xbe
-
-    // combine sections
-    let mut section_map = SectionMap::from_data(&mods);
-
-    // Assign virtual addresses
-    let mut xbe = Xbe::from_path(input_xbe);
-    let mut last_virtual_address = xbe.get_next_virtual_address();
-
-    for (_, sec) in section_map.0.iter_mut() {
-        sec.virtual_address = last_virtual_address;
-        last_virtual_address =
-            xbe.get_next_virtual_address_after(last_virtual_address + sec.bytes.len() as u32);
-    }
-
-    // build symbol table
-    let mut symbol_table = SymbolTable::new();
-    for obj in patches.iter().chain(mods.iter()) {
-        symbol_table.extract_symbols(&section_map, obj);
-    }
-    println!("{:#?}", &symbol_table);
-
-    // process relocations for mods
-    process_relocations(&symbol_table, &mut section_map, &mods);
-
-    // read patch config
-    let config =
-        String::from_utf8(std::fs::read("bin/patch.conf").expect("Could not read config file."))
-            .expect("Could not read config file.");
-    let patches: Vec<Patch> = config
-        .split(' ')
-        .tuples()
-        .zip(patches.iter())
-        .map(
-            |((start_symbol_name, end_symbol_name, addr), patchfile)| Patch {
-                patchfile,
-                start_symbol_name,
-                end_symbol_name,
-                virtual_address: addr.parse().expect("Malformed address in config"),
-            },
-        )
-        .collect();
-
-    // apply patches
-    for patch in &patches {
-        patch.apply(&mut xbe, &symbol_table);
-    }
-
-    // insert sections into XBE
-    // TODO: Sort by virtual address (iterating over HashMap gives non-deterministic results)
-    for (name, sec) in section_map.0 {
-        xbe.add_section(Section {
-            name: name.to_owned() + "\0",
-            flags: SectionFlags::PRELOAD
-                | match name {
-                    ".mtext" => SectionFlags::EXECUTABLE,
-                    ".mdata" | ".mbss" => SectionFlags::WRITABLE,
-                    _ => SectionFlags::PRELOAD, //No "zero" value
-                },
-            virtual_size: sec.bytes.len() as u32,
-            data: sec.bytes,
-            virtual_address: sec.virtual_address,
-        })
-    }
-    xbe.write_to_file(output_xbe);
 }
 
 #[derive(Debug, Clone)]
@@ -421,6 +314,105 @@ impl SymbolTable {
             }
         }
     }
+}
+
+/// How to inject
+/// - separate patch files from other object files
+///     - Symbols are shared between Patches and Mods
+///     - Sections from patches are not combined into the '.m{text,data,bss,rdata}' sections.
+/// - combine .text, .data, .bss, .rdata of each non-patch file
+///     - have start offsets within the sections for each file
+/// - assign virtual address ranges to each combined section
+/// - build combined symbol table
+///     - Most symbols are assigned a virtual address within a combined section
+///     - Patch symbols are assigned a virtual address from a config file
+/// - process relocations within each file
+/// - process base game patch files
+/// - insert sections into xbe
+pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xbe: &str) {
+    let patchbytes: Vec<Vec<u8>> = patchfiles
+        .iter()
+        .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
+        .collect();
+    let patches: Vec<ObjectFile> = patchfiles
+        .iter()
+        .zip(patchbytes.iter())
+        .map(|(f, b)| ObjectFile::new(b, f))
+        .collect();
+
+    let modbytes: Vec<Vec<u8>> = modfiles
+        .iter()
+        .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
+        .collect();
+    let mods: Vec<ObjectFile> = modfiles
+        .iter()
+        .zip(modbytes.iter())
+        .map(|(f, b)| ObjectFile::new(b, f))
+        .collect();
+
+    // combine sections
+    let mut section_map = SectionMap::from_data(&mods);
+
+    // Assign virtual addresses
+    let mut xbe = Xbe::from_path(input_xbe);
+    let mut last_virtual_address = xbe.get_next_virtual_address();
+
+    for (_, sec) in section_map.0.iter_mut() {
+        sec.virtual_address = last_virtual_address;
+        last_virtual_address =
+            xbe.get_next_virtual_address_after(last_virtual_address + sec.bytes.len() as u32);
+    }
+
+    // build symbol table
+    let mut symbol_table = SymbolTable::new();
+    for obj in patches.iter().chain(mods.iter()) {
+        symbol_table.extract_symbols(&section_map, obj);
+    }
+    println!("{:#?}", &symbol_table);
+
+    // process relocations for mods
+    process_relocations(&symbol_table, &mut section_map, &mods);
+
+    // read patch config
+    let config =
+        String::from_utf8(std::fs::read("bin/patch.conf").expect("Could not read config file."))
+            .expect("Could not read config file.");
+    let patches: Vec<Patch> = config
+        .split(' ')
+        .tuples()
+        .zip(patches.iter())
+        .map(
+            |((start_symbol_name, end_symbol_name, addr), patchfile)| Patch {
+                patchfile,
+                start_symbol_name,
+                end_symbol_name,
+                virtual_address: addr.parse().expect("Malformed address in config"),
+            },
+        )
+        .collect();
+
+    // apply patches
+    for patch in &patches {
+        patch.apply(&mut xbe, &symbol_table);
+    }
+
+    // insert sections into XBE
+    // TODO: Sort by virtual address (iterating over HashMap gives non-deterministic results)
+    for (name, sec) in section_map.0 {
+        xbe.add_section(Section {
+            name: name.to_owned() + "\0",
+            flags: SectionFlags::PRELOAD
+                | match name {
+                    ".mtext" => SectionFlags::EXECUTABLE,
+                    ".mdata" | ".mbss" => SectionFlags::WRITABLE,
+                    _ => SectionFlags::PRELOAD, //No "zero" value
+                },
+            virtual_size: sec.bytes.len() as u32,
+            data: sec.bytes,
+            virtual_address: sec.virtual_address,
+        })
+    }
+    xbe.write_to_file(output_xbe);
 }
 
 fn process_relocations(
