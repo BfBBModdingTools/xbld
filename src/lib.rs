@@ -175,12 +175,8 @@ pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xb
     }
     println!("{:#?}", &symbol_table);
 
-    // process relocations
+    // process relocations for mods
     process_relocations(&symbol_table, &mut section_map, &mods);
-
-    let mut patch_sections = SectionMap::from_data(&patches);
-    println!("{:#?}", &patch_sections);
-    process_relocations(&symbol_table, &mut patch_sections, &patches);
 
     // read patch config
     let config =
@@ -200,6 +196,7 @@ pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xb
         )
         .collect();
 
+    // apply patches
     for patch in &patches {
         patch.apply(&mut xbe, &symbol_table);
     }
