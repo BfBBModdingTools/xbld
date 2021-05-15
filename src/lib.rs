@@ -45,16 +45,6 @@ impl<'a> SectionInProgress<'a> {
     }
 }
 
-#[test]
-fn tmptest() {
-    inject(
-        &["bin/framehook_patch.o"],
-        &["bin/loader.o", "bin/mod.o"],
-        "bin/default.xbe",
-        "bin/output.xbe",
-    );
-}
-
 struct ObjectFile<'a> {
     bytes: &'a [u8],
     coff: Coff<'a>,
@@ -545,12 +535,25 @@ fn relocation_rel32(
         .unwrap();
 }
 
+#[cfg(test)]
 mod tests {
+    use super::{inject, SectionInProgress};
+
+    #[test]
+    fn no_panic() {
+        inject(
+            &["bin/framehook_patch.o"],
+            &["bin/loader.o", "bin/mod.o"],
+            "bin/default.xbe",
+            "bin/output.xbe",
+        );
+    }
+
     #[test]
     fn file_offsets() {
-        let bytes_a = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8];
-        let bytes_b = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8];
-        let mut section = crate::SectionInProgress::new();
+        let bytes_a: Vec<u8> = (0u8..12u8).collect();
+        let bytes_b: Vec<u8> = (0u8..8u8).collect();
+        let mut section = SectionInProgress::new();
         section.add_bytes(&bytes_a, "bytesA");
         section.add_bytes(&bytes_b, "bytesB");
 
@@ -561,12 +564,12 @@ mod tests {
 
     #[test]
     fn add_bytes() {
-        let bytes_a = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8, 8u8, 9u8, 10u8, 11u8];
-        let bytes_b = vec![0u8, 1u8, 2u8, 3u8, 4u8, 5u8, 6u8, 7u8];
+        let bytes_a: Vec<u8> = (0u8..12u8).collect();
+        let bytes_b: Vec<u8> = (0u8..8u8).collect();
         let mut combined = bytes_a.clone();
         combined.append(&mut bytes_b.clone());
 
-        let mut section = crate::SectionInProgress::new();
+        let mut section = SectionInProgress::new();
         section.add_bytes(&bytes_a, "bytesA");
         section.add_bytes(&bytes_b, "bytesB");
 
