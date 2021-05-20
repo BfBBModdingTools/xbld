@@ -13,6 +13,14 @@ use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use xbe::{Section, SectionFlags, Xbe};
 
 #[derive(Debug, Clone)]
+pub struct Configuration {
+    pub patchfiles: Vec<String>,
+    pub modfiles: Vec<String>,
+    pub input_xbe: String,
+    pub output_xbe: String,
+}
+
+#[derive(Debug, Clone)]
 struct SectionInProgress<'a> {
     bytes: Vec<u8>,
     file_offset_start: HashMap<&'a str, u32>,
@@ -329,22 +337,26 @@ impl SymbolTable {
 /// - process relocations within each file
 /// - process base game patch files
 /// - insert sections into xbe
-pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xbe: &str) {
-    let patchbytes: Vec<Vec<u8>> = patchfiles
+pub fn inject(config: Configuration) {
+    let patchbytes: Vec<Vec<u8>> = config
+        .patchfiles
         .iter()
         .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
         .collect();
-    let patches: Vec<ObjectFile> = patchfiles
+    let patches: Vec<ObjectFile> = config
+        .patchfiles
         .iter()
         .zip(patchbytes.iter())
         .map(|(f, b)| ObjectFile::new(b, f))
         .collect();
 
-    let modbytes: Vec<Vec<u8>> = modfiles
+    let modbytes: Vec<Vec<u8>> = config
+        .modfiles
         .iter()
         .map(|f| std::fs::read(f).unwrap_or_else(|_| panic!("Could not read object file {}", f)))
         .collect();
-    let mods: Vec<ObjectFile> = modfiles
+    let mods: Vec<ObjectFile> = config
+        .modfiles
         .iter()
         .zip(modbytes.iter())
         .map(|(f, b)| ObjectFile::new(b, f))
@@ -354,7 +366,7 @@ pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xb
     let mut section_map = SectionMap::from_data(&mods);
 
     // Assign virtual addresses
-    let mut xbe = Xbe::from_path(input_xbe);
+    let mut xbe = Xbe::from_path(config.input_xbe);
     let mut last_virtual_address = xbe.get_next_virtual_address();
 
     for (_, sec) in section_map.0.iter_mut() {
@@ -374,10 +386,10 @@ pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xb
     process_relocations(&symbol_table, &mut section_map, &mods);
 
     // read patch config
-    let config =
+    let patch_config =
         String::from_utf8(std::fs::read("bin/patch.conf").expect("Could not read config file."))
             .expect("Could not read config file.");
-    let patches: Vec<Patch> = config
+    let patches: Vec<Patch> = patch_config
         .split(' ')
         .tuples()
         .zip(patches.iter())
@@ -412,7 +424,7 @@ pub fn inject(patchfiles: &[&str], modfiles: &[&str], input_xbe: &str, output_xb
             virtual_address: sec.virtual_address,
         })
     }
-    xbe.write_to_file(output_xbe);
+    xbe.write_to_file(config.output_xbe);
 }
 
 fn process_relocations(
@@ -526,16 +538,16 @@ fn relocation_rel32(
 
 #[cfg(test)]
 mod tests {
-    use super::{inject, SectionInProgress};
+    use super::{inject, Configuration, SectionInProgress};
 
     #[test]
     fn no_panic() {
-        inject(
-            &["bin/framehook_patch.o"],
-            &["bin/loader.o", "bin/mod.o"],
-            "bin/default.xbe",
-            "bin/output.xbe",
-        );
+        inject(Configuration {
+            patchfiles: vec!["bin/framehook_patch.o".to_string()],
+            modfiles: vec!["bin/loader.o".to_string(), "bin/mod.o".to_string()],
+            input_xbe: "bin/default.xbe".to_string(),
+            output_xbe: "bin/output.xbe".to_string(),
+        });
     }
 
     #[test]
