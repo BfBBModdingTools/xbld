@@ -380,7 +380,6 @@ pub fn inject(config: Configuration) {
     for obj in patches.iter().chain(mods.iter()) {
         symbol_table.extract_symbols(&section_map, obj);
     }
-    println!("{:#?}", &symbol_table);
 
     // process relocations for mods
     process_relocations(&symbol_table, &mut section_map, &mods);
@@ -435,9 +434,6 @@ fn process_relocations(
     for file in files.iter() {
         for section in file.coff.sections.iter() {
             for reloc in section.relocations(&file.bytes).unwrap_or_default() {
-                // find symbol
-                println!("{:#?}", (&reloc, &file.filename));
-
                 // We are assuming i386 relocations only (Which is fine for Xbox)
                 match reloc.typ {
                     goblin::pe::relocation::IMAGE_REL_I386_DIR32 => {
