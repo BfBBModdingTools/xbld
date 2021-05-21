@@ -103,7 +103,7 @@ impl Patch<'_> {
         let fail = || -> ! {
             panic!(
                 "Patch Symbol '{}' is not present in patch file '{}'.",
-                self.start_symbol_name, self.patchfile.filename
+                name, self.patchfile.filename
             );
         };
 
