@@ -18,7 +18,10 @@ fn main() {
     };
     println!("{:?}", &config);
 
-    bfbb_linker::inject(config);
+    match bfbb_linker::inject(config) {
+        Ok(_) => {}
+        Err(e) => eprint!("{}", e),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
