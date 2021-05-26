@@ -364,7 +364,7 @@ pub fn inject(config: Configuration) -> Result<()> {
     let mut xbe = Xbe::from_path(config.input_xbe);
     let mut last_virtual_address = xbe.get_next_virtual_address();
 
-    for (_, sec) in section_map.0.iter_mut() {
+    for (_, sec) in section_map.0.iter_mut().sorted_by(|a, b| a.0.cmp(b.0)) {
         sec.virtual_address = last_virtual_address;
         last_virtual_address =
             xbe.get_next_virtual_address_after(last_virtual_address + sec.bytes.len() as u32);
@@ -403,8 +403,11 @@ pub fn inject(config: Configuration) -> Result<()> {
     }
 
     // insert sections into XBE
-    // TODO: Sort by virtual address (iterating over HashMap gives non-deterministic results)
-    for (name, sec) in section_map.0 {
+    for (name, sec) in section_map
+        .0
+        .into_iter()
+        .sorted_by(|a, b| a.1.virtual_address.cmp(&b.1.virtual_address))
+    {
         xbe.add_section(Section {
             name: name.to_owned() + "\0",
             flags: SectionFlags::PRELOAD
@@ -557,7 +560,7 @@ mod tests {
     fn no_panic() {
         match inject(Configuration {
             patchfiles: vec!["bin/framehook_patch.o".to_string()],
-            modfiles: vec!["bin/loader.o".to_string(), "bin/mod.o".to_string()],
+            modfiles: vec!["bin/loader.o".to_string()],
             input_xbe: "bin/default.xbe".to_string(),
             output_xbe: "bin/output.xbe".to_string(),
         }) {
