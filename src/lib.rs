@@ -32,10 +32,30 @@ struct SectionInProgress<'a> {
 }
 
 impl<'a> SectionInProgress<'a> {
-    fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
+    pub fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
         self.file_offset_start
             .insert(filename, self.bytes.len() as u32);
         self.bytes.append(&mut bytes.to_owned());
+    }
+
+    /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
+    /// add `value`, and overwrite the original value with the result.
+    pub fn relative_update_u32(&mut self, filename: &str, file_section_address: u32, value: u32) {
+        let mut cur = Cursor::new(&mut self.bytes);
+
+        let d_start = self.file_offset_start.get(filename).unwrap() + file_section_address;
+        cur.set_position(d_start as u64);
+        let offset = cur.read_u32::<LE>().unwrap();
+        cur.set_position(d_start as u64);
+
+        // update data
+        cur.write_u32::<LE>(value + offset).unwrap();
+    }
+
+    /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
+    /// add `value`, and overwrite the original value with the result.
+    pub fn relative_update_i32(&mut self, filename: &str, file_section_address: u32, value: i32) {
+        self.relative_update_u32(filename, file_section_address, value as u32)
     }
 }
 
@@ -470,7 +490,7 @@ fn relocation_dir32(
         .map_err(|e| Error::Goblin(file.filename.to_string(), e))?;
 
     // Find virtual address of symbol
-    let symb_addr = match symbol_table.0.get(symbol_name) {
+    let target_address = match symbol_table.0.get(symbol_name) {
         Some(addr) => *addr,
         _ => return Ok(()),
     };
@@ -486,18 +506,7 @@ fn relocation_dir32(
         )
         .unwrap_or_else(|| panic!("Could not find section .m{}", section.name().unwrap()));
 
-    // TODO: I'm pretty sure there's a bug here. We need to add the offset for this file
-    // TODO: Testing needed!
-    let d_start = sec_data.file_offset_start.get(file.filename).unwrap() + reloc.virtual_address;
-    let mut cur = std::io::Cursor::new(&mut sec_data.bytes);
-
-    // TODO: This should be handled by a method on SectionInProgress
-    cur.set_position(d_start as u64);
-    let offset = cur.read_u32::<LE>().unwrap();
-    cur.set_position(d_start as u64);
-
-    // update data
-    cur.write_u32::<LE>(symb_addr + offset).unwrap();
+    sec_data.relative_update_u32(file.filename, reloc.virtual_address, target_address);
 
     Ok(())
 }
@@ -518,8 +527,8 @@ fn relocation_rel32(
         .name(&file.coff.strings)
         .map_err(|e| Error::Goblin(file.filename.to_string(), e))?;
 
-    // Find virtual address of symbol
-    let symb_addr = match symbol_table.0.get(symbol_name) {
+    // Find virtual address of target symbol
+    let target_address = match symbol_table.0.get(symbol_name) {
         Some(addr) => *addr,
         _ => return Ok(()),
     };
@@ -533,21 +542,21 @@ fn relocation_rel32(
         )
         .unwrap_or_else(|| panic!("Could not find section .m{}", section.name().unwrap()));
 
-    let sec_addr = sec_data
+    let sec_address = sec_data
         .file_offset_start
         .get(file.filename)
         .expect("Failed to get file start information to process a relocation.")
         + reloc.virtual_address;
 
-    let mut cur = std::io::Cursor::new(&mut sec_data.bytes);
-    cur.set_position(sec_addr as u64);
-    let target_address = cur.read_u32::<LE>().unwrap() + symb_addr;
-    let from_address = sec_addr + sec_data.virtual_address + 5;
-
-    // update data
-    cur.set_position(sec_addr as u64);
-    cur.write_u32::<LE>((target_address as i32 - from_address as i32) as u32)
-        .unwrap();
+    // Calculate relative jump based on distance from the virtual address of the next instruction
+    // (AKA the value of the CPU program counter after reading this instruction) and the target
+    const INSTRUCTION_SIZE: u32 = 5;
+    let from_address = sec_address + sec_data.virtual_address + INSTRUCTION_SIZE;
+    sec_data.relative_update_i32(
+        file.filename,
+        sec_address,
+        target_address as i32 - from_address as i32,
+    );
 
     Ok(())
 }
