@@ -52,6 +52,7 @@ impl Xbe {
         self.sections.push(section);
     }
 
+    // TODO
     #[allow(dead_code)]
     pub fn get_bytes(&self, virtual_range: Range<u32>) -> Result<&[u8], String> {
         let section = self.sections.iter().find(|s| {
@@ -59,13 +60,12 @@ impl Xbe {
                 && s.virtual_address + s.virtual_size >= virtual_range.end
         });
 
-        if section.is_none() {
-            return Err(format!(
+        let section = section.ok_or_else(|| {
+            format!(
                 "Virtual address range [{},{}) is not used in this XBE",
                 virtual_range.start, virtual_range.end
-            ));
-        }
-        let section = section.unwrap();
+            )
+        })?;
 
         let start = (virtual_range.start - section.virtual_address) as usize;
         let end = (virtual_range.end - section.virtual_address) as usize;
@@ -78,13 +78,12 @@ impl Xbe {
                 && s.virtual_address + s.virtual_size >= virtual_range.end
         });
 
-        if section.is_none() {
-            return Err(format!(
+        let section = section.ok_or_else(|| {
+            format!(
                 "Virtual address range [{},{}) is not used in this XBE",
                 virtual_range.start, virtual_range.end
-            ));
-        }
-        let section = section.unwrap();
+            )
+        })?;
 
         let start = (virtual_range.start - section.virtual_address) as usize;
         let end = (virtual_range.end - section.virtual_address) as usize;
