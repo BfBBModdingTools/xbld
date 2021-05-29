@@ -14,7 +14,7 @@ use goblin::pe::{self, relocation::Relocation, section_table::SectionTable, symb
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
-use xbe::{Section, SectionFlags, Xbe};
+use xbe::{SectionFlags, Xbe};
 
 #[derive(Debug, Clone)]
 pub struct Configuration {
@@ -428,18 +428,19 @@ pub fn inject(config: Configuration) -> Result<()> {
         .into_iter()
         .sorted_by(|a, b| a.1.virtual_address.cmp(&b.1.virtual_address))
     {
-        xbe.add_section(Section {
-            name: name.to_owned() + "\0",
-            flags: SectionFlags::PRELOAD
+        let virtual_size = sec.bytes.len() as u32;
+        xbe.add_section(
+            name.to_owned() + "\0",
+            SectionFlags::PRELOAD
                 | match name {
                     ".mtext" => SectionFlags::EXECUTABLE,
                     ".mdata" | ".mbss" => SectionFlags::WRITABLE,
                     _ => SectionFlags::PRELOAD, //No "zero" value
                 },
-            virtual_size: sec.bytes.len() as u32,
-            data: sec.bytes,
-            virtual_address: sec.virtual_address,
-        })
+            sec.bytes,
+            sec.virtual_address,
+            virtual_size,
+        )
     }
     xbe.write_to_file(config.output_xbe);
 

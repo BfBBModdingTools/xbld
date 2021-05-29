@@ -3,6 +3,7 @@ mod raw;
 use std::{ops::Range, path::Path};
 
 use bitflags::bitflags;
+use itertools::Itertools;
 
 macro_rules! round_to_next {
     ($num:expr, $round_to:expr) => {{
@@ -24,7 +25,7 @@ impl Xbe {
     where
         P: AsRef<Path>,
     {
-        Self::from_raw(&raw::load_xbe(std::fs::File::open(path).unwrap()).unwrap())
+        Self::from_raw(raw::load_xbe(std::fs::File::open(path).unwrap()).unwrap())
     }
 
     pub fn write_to_file<P>(&self, path: P)
@@ -48,7 +49,32 @@ impl Xbe {
         round_to_next!(after, 0x20)
     }
 
-    pub fn add_section(&mut self, section: Section) {
+    pub fn add_section(
+        &mut self,
+        name: String,
+        flags: SectionFlags,
+        data: Vec<u8>,
+        virtual_address: u32,
+        virtual_size: u32,
+    ) {
+        let raw_address = self
+            .sections
+            .iter()
+            .sorted_by(|a, b| a.raw_address.cmp(&b.raw_address))
+            .last()
+            // TODO: this assumes raw_size == virtual_size
+            .map(|a| round_to_next!(a.raw_address + a.virtual_size, 0x1000))
+            .unwrap_or(0);
+
+        let section = Section {
+            name,
+            flags,
+            data,
+            virtual_address,
+            virtual_size,
+            raw_address,
+            digest: None,
+        };
         self.sections.push(section);
     }
 
@@ -96,18 +122,18 @@ impl Xbe {
         let certificate = raw::Certificate {
             size: raw::Certificate::SIZE,
             time_date: self.header.cert_time_date,
-            title_id: 0,
+            title_id: self.header.title_id.unwrap_or(0),
             title_name: self.header.title_name,
             alternate_title_ids: [0u8; 0x40],
             allowed_media: self.header.allowed_media.bits,
             game_region: self.header.game_region.bits,
-            game_ratings: 0xFFFFFFFF,
+            game_ratings: self.header.game_ratings.unwrap_or(0xFFFFFFFF),
             disk_number: 0,
             version: self.header.cert_version,
-            lan_key: [0u8; 0x10],
-            signature_key: [0u8; 0x10],
-            alternate_signature_keys: [0u8; 0x100],
-            reserved: [0u8; 0x1C].to_vec(),
+            lan_key: self.header.lan_key.unwrap_or([0u8; 0x10]),
+            signature_key: self.header.signature_key.unwrap_or([0u8; 0x10]),
+            alternate_signature_keys: self.header.alternate_signature_keys.unwrap_or([0u8; 0x100]),
+            unknown: self.header.unknown.clone(),
         };
         let certificate_size = raw::Certificate::SIZE;
 
@@ -131,49 +157,36 @@ impl Xbe {
         // TODO: This assumes the header will never grow past 0x1000 bytes
         // Fixing this requires managing more pointers like TLS, Kernel Thunk,
         // and Entry Point, as it will move the vanilla sections
-
-        // TODO: Use the virtual_address field added to Section (and ensure that
-        // it is properly set)
-        let mut virtual_address = 0x11000;
-        let mut raw_address = 0x1000;
+        // (Actually these may all be virtual addresses, entry point certainly is, investigate more)
         let section_headers: Vec<raw::SectionHeader> = self
             .sections
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                let virtual_size = s.virtual_size;
-                let raw_size = s.data.len() as u32;
-                let hdr = raw::SectionHeader {
-                    section_flags: s.flags.bits,
-                    virtual_address,
-                    virtual_size,
-                    raw_address,
-                    raw_size,
-                    section_name_address: base_address
-                        + image_header_size
-                        + certificate_size
-                        + section_headers_size
-                        + section_page_reference_size
-                        + section_name_offsets[i],
-                    section_name_reference_count: 0,
-                    head_shared_page_reference_count_address: base_address
-                        + image_header_size
-                        + certificate_size
-                        + section_headers_size
-                        + i as u32 * 2,
-                    tail_shared_page_reference_count_address: base_address
-                        + image_header_size
-                        + certificate_size
-                        + section_headers_size
-                        + i as u32 * 2
-                        + 2,
-                    section_digest: [0u8; 0x14],
-                };
-                virtual_address += virtual_size;
-                virtual_address = round_to_next!(virtual_address, 0x20);
-                raw_address += raw_size;
-                raw_address = round_to_next!(raw_address, 0x1000);
-                hdr
+            .map(|(i, s)| raw::SectionHeader {
+                section_flags: s.flags.bits,
+                virtual_address: s.virtual_address,
+                virtual_size: s.virtual_size,
+                raw_address: s.raw_address,
+                raw_size: s.data.len() as u32,
+                section_name_address: base_address
+                    + image_header_size
+                    + certificate_size
+                    + section_headers_size
+                    + section_page_reference_size
+                    + section_name_offsets[i],
+                section_name_reference_count: 0,
+                head_shared_page_reference_count_address: base_address
+                    + image_header_size
+                    + certificate_size
+                    + section_headers_size
+                    + i as u32 * 2,
+                tail_shared_page_reference_count_address: base_address
+                    + image_header_size
+                    + certificate_size
+                    + section_headers_size
+                    + i as u32 * 2
+                    + 2,
+                section_digest: s.digest.unwrap_or([0u8; 0x14]),
             })
             .collect();
 
@@ -196,7 +209,13 @@ impl Xbe {
             })
             .collect();
 
-        let size_of_image = virtual_address - base_address;
+        let size_of_image = section_headers
+            .iter()
+            .sorted_by(|a, b| a.virtual_address.cmp(&b.virtual_address))
+            .last()
+            .map(|x| round_to_next!(x.virtual_address + x.virtual_size, 0x20))
+            .unwrap_or(base_address)
+            - base_address;
 
         // pathname and filename are part of the same string, so it's not added to the total
         let debug_strings_size = self.header.debug_unicode_filename.len() as u32 * 2
@@ -230,7 +249,7 @@ impl Xbe {
 
         let image_header = raw::ImageHeader {
             magic_number: b"XBEH".to_owned(),
-            digital_signature: [0u8; 256],
+            digital_signature: self.header.digital_signature.unwrap_or([0u8; 256]),
             base_address,
             size_of_headers,
             size_of_image,
@@ -300,7 +319,7 @@ impl Xbe {
         }
     }
 
-    fn from_raw(xbe: &raw::Xbe) -> Self {
+    fn from_raw(xbe: raw::Xbe) -> Self {
         let pe = PE {
             stack_commit: xbe.image_header.pe_stack_commit,
             heap_reserve: xbe.image_header.pe_heap_reserve,
@@ -312,45 +331,55 @@ impl Xbe {
         };
 
         let header = Header {
-            debug_pathname: xbe.debug_pathname.clone(),
-            debug_filename: xbe.debug_filename.clone(),
-            debug_unicode_filename: xbe.debug_unicode_filename.clone(),
+            digital_signature: Some(xbe.image_header.digital_signature),
+            debug_pathname: xbe.debug_pathname,
+            debug_filename: xbe.debug_filename,
+            debug_unicode_filename: xbe.debug_unicode_filename,
             image_time_date: xbe.image_header.time_date,
             entry_point: xbe.image_header.entry_point,
             tls_address: xbe.image_header.tls_address,
             pe,
             kernel_image_thunk_address: xbe.image_header.kernel_image_thunk_address,
             cert_time_date: xbe.certificate.time_date,
+            title_id: Some(xbe.certificate.title_id),
             title_name: xbe.certificate.title_name,
             allowed_media: AllowedMedia::from_bits_truncate(xbe.certificate.allowed_media),
+            game_ratings: Some(xbe.certificate.game_ratings),
             game_region: GameRegion::from_bits_truncate(xbe.certificate.game_region),
             cert_version: xbe.certificate.version,
+            lan_key: Some(xbe.certificate.lan_key),
+            signature_key: Some(xbe.certificate.signature_key),
+            alternate_signature_keys: Some(xbe.certificate.alternate_signature_keys),
+            unknown: xbe.certificate.unknown,
         };
 
         let sections = xbe
             .sections
-            .iter()
-            .zip(xbe.section_headers.iter())
-            .zip(xbe.section_names.iter())
-            .map(|t| Section {
-                name: t.1.clone(),
-                flags: SectionFlags::from_bits_truncate(t.0 .1.section_flags),
-                virtual_address: t.0 .1.virtual_address,
-                virtual_size: t.0 .1.virtual_size,
-                data: t.0 .0.bytes.clone(),
+            .into_iter()
+            .zip(xbe.section_headers.into_iter())
+            .zip(xbe.section_names.into_iter())
+            .map(|((sec, hdr), name)| Section {
+                name,
+                flags: SectionFlags::from_bits_truncate(hdr.section_flags),
+                virtual_address: hdr.virtual_address,
+                virtual_size: hdr.virtual_size,
+                data: sec.bytes,
+                raw_address: hdr.raw_address,
+                digest: Some(hdr.section_digest),
             })
             .collect();
 
         Xbe {
             header,
             sections,
-            library_versions: xbe.library_versions.clone(),
-            logo_bitmap: xbe.logo_bitmap.clone(),
+            library_versions: xbe.library_versions,
+            logo_bitmap: xbe.logo_bitmap,
         }
     }
 }
 
 pub struct Header {
+    pub digital_signature: Option<[u8; 0x100]>,
     pub debug_pathname: String,
     pub debug_filename: String,
     pub debug_unicode_filename: Vec<u16>,
@@ -360,10 +389,16 @@ pub struct Header {
     pub pe: PE,
     pub kernel_image_thunk_address: u32,
     pub cert_time_date: u32,
+    pub title_id: Option<u32>,
     pub title_name: [u8; 0x50],
     pub allowed_media: AllowedMedia,
+    pub game_ratings: Option<u32>,
     pub game_region: GameRegion,
     pub cert_version: u32,
+    pub lan_key: Option<[u8; 0x10]>,
+    pub signature_key: Option<[u8; 0x10]>,
+    pub alternate_signature_keys: Option<[u8; 0x100]>,
+    pub unknown: Vec<u8>,
 }
 
 pub struct PE {
@@ -409,6 +444,8 @@ pub struct Section {
     pub data: Vec<u8>,
     pub virtual_address: u32,
     pub virtual_size: u32,
+    raw_address: u32,
+    digest: Option<[u8; 0x14]>,
 }
 
 bitflags! {
@@ -419,5 +456,36 @@ bitflags! {
         const INSERTED_FILE = 0x8;
         const HEAD_PAGE_READ_ONLY = 0x10;
         const TAIL_PAGE_READ_ONLY = 0x20;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    /// Read an xbe and immediately serialize it to a new file, asserting that both files
+    /// are identical
+    fn vanilla_serialization() {
+        use sha1::{Digest, Sha1};
+
+        let xbe = Xbe::from_path("bin/default.xbe");
+        xbe.write_to_file("bin/test.xbe");
+
+        // ensure the files are the same.
+        // TODO: implement this as a function in the XBE module/crate and update chum_bucket_lab
+        // to use it instead (and this test)
+        const XBE_SHA1: &'static [u8] = &[
+            0xa9, 0xac, 0x85, 0x5c, 0x4e, 0xe8, 0xb4, 0x1b, 0x66, 0x1c, 0x35, 0x78, 0xc9, 0x59,
+            0xc0, 0x24, 0xf1, 0x06, 0x8c, 0x47,
+        ];
+        let mut hasher = Sha1::new();
+        hasher.update(&std::fs::read("bin/test.xbe").unwrap());
+        let hash = hasher.finalize();
+
+        //remove temporary file
+        std::fs::remove_file("bin/test.xbe").unwrap();
+
+        assert_eq!(*XBE_SHA1, *hash);
     }
 }

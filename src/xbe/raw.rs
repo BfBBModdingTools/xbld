@@ -4,15 +4,25 @@ use std::{
     io::{Read, Result, Seek, SeekFrom, Write},
 };
 
-fn pad_to_exact(v: &mut Vec<u8>, to: usize) {
-    while v.len() < to {
-        v.push(0u8);
+/// adds `amount` bytes of padding to a byte vector
+fn pad(v: &mut Vec<u8>, amount: usize) {
+    for _ in 0..amount {
+        v.push(0);
     }
 }
 
+/// adds padding to a byte vector until its len equals `to`
+fn pad_to(v: &mut Vec<u8>, to: usize) {
+    while v.len() < to {
+        v.push(0);
+    }
+}
+
+/// adds padding to a byte vector until its len is a multiple of `to`
+/// no padding is added if the len is already a multiple of `to`
 fn pad_to_nearest(v: &mut Vec<u8>, to: usize) {
     while v.len() % to != 0 {
-        v.push(0u8);
+        v.push(0);
     }
 }
 
@@ -33,10 +43,6 @@ pub struct Xbe {
 
 impl Xbe {
     /// Serialize this XBE object to a valid .xbe executable
-    ///
-    /// Note: this currently results in an xbe file with less ending padding
-    /// when tested with SpongeBob SquarePants: Battle for Bikini Bottom,
-    /// but the outputted xbe works regardless.
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut img_hdr_v = self.image_header.serialize()?;
         let mut ctf_v = self.certificate.serialize()?;
@@ -46,23 +52,17 @@ impl Xbe {
         let mut bitmap = self.logo_bitmap.serialize()?;
         let mut sections = self.serialize_sections()?;
 
-        pad_to_exact(
+        pad_to(
             &mut &mut img_hdr_v,
             (self.image_header.certificate_address - self.image_header.base_address) as usize,
         );
         img_hdr_v.append(&mut ctf_v);
 
-        pad_to_exact(
+        pad_to(
             &mut img_hdr_v,
             (self.image_header.section_headers_address - self.image_header.base_address) as usize,
         );
         img_hdr_v.append(&mut sec_hdrs);
-
-        // pad_to_exact(
-        //     &mut img_hdr_v,
-        //     (self.section_headers[0].section_name_address - self.image_header.base_address)
-        //         as usize,
-        // );
         img_hdr_v.append(&mut sec_names);
 
         // library versions array appears to be 4-byte-aligned
@@ -70,7 +70,7 @@ impl Xbe {
         img_hdr_v.append(&mut library_versions);
 
         // Write Debug file/path names
-        pad_to_exact(
+        pad_to(
             &mut img_hdr_v,
             (self.image_header.debug_unicode_filename_address - self.image_header.base_address)
                 as usize,
@@ -81,14 +81,14 @@ impl Xbe {
         }
 
         // debug filename is part of this string, just starting at a later offset
-        pad_to_exact(
+        pad_to(
             &mut img_hdr_v,
             (self.image_header.debug_pathname_address - self.image_header.base_address) as usize,
         );
         img_hdr_v.write_all(self.debug_pathname.as_bytes())?;
 
         // Write bitmap
-        pad_to_exact(
+        pad_to(
             &mut img_hdr_v,
             (self.image_header.logo_bitmap_address - self.image_header.base_address) as usize,
         );
@@ -100,8 +100,8 @@ impl Xbe {
         // Add sections
         img_hdr_v.append(&mut sections);
 
-        // End padding
-        pad_to_nearest(&mut img_hdr_v, 0x1000);
+        // End padding (not sure if this is present in all XBEs)
+        pad(&mut img_hdr_v, 0x1000);
 
         Ok(img_hdr_v)
     }
@@ -302,7 +302,7 @@ pub struct Certificate {
     pub lan_key: [u8; 0x10],
     pub signature_key: [u8; 0x10],
     pub alternate_signature_keys: [u8; 0x100],
-    pub reserved: Vec<u8>, //There seems to be more bytes I can't find any documentation on.
+    pub unknown: Vec<u8>, //There seems to be more bytes I can't find any documentation on.
 }
 
 impl Certificate {
@@ -323,7 +323,7 @@ impl Certificate {
         v.write_all(&self.lan_key)?;
         v.write_all(&self.signature_key)?;
         v.write_all(&self.alternate_signature_keys)?;
-        v.write_all(&self.reserved)?;
+        v.write_all(&self.unknown)?;
 
         Ok(v)
     }
@@ -345,7 +345,7 @@ impl Default for Certificate {
             lan_key: [0u8; 16],
             signature_key: [0u8; 16],
             alternate_signature_keys: [0u8; 0x100],
-            reserved: vec![],
+            unknown: vec![],
         }
     }
 }
@@ -439,8 +439,6 @@ impl Section {
 }
 
 pub fn load_xbe(mut file: File) -> std::io::Result<Xbe> {
-    // let mut xbe = XBE::default();
-
     // Read header data
     let image_header = load_image_header(&mut file)?;
 
@@ -540,7 +538,7 @@ fn load_certificate(file: &mut File, header: &ImageHeader) -> Result<Certificate
     file.read_exact(&mut certificate.alternate_signature_keys)?;
 
     while file.stream_position()? < start + certificate.size as u64 {
-        certificate.reserved.push(file.read_u8()?);
+        certificate.unknown.push(file.read_u8()?);
     }
 
     Ok(certificate)
@@ -694,4 +692,26 @@ fn load_section(file: &mut File, section_header: &SectionHeader) -> Result<Secti
     section.bytes = buf;
 
     Ok(section)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deserialize_and_reserialize() {
+        use sha1::{Digest, Sha1};
+
+        let xbe = load_xbe(std::fs::File::open("bin/default.xbe").unwrap()).unwrap();
+        let bytes = xbe.serialize().unwrap();
+
+        const XBE_SHA1: &'static [u8] = &[
+            0xa9, 0xac, 0x85, 0x5c, 0x4e, 0xe8, 0xb4, 0x1b, 0x66, 0x1c, 0x35, 0x78, 0xc9, 0x59,
+            0xc0, 0x24, 0xf1, 0x06, 0x8c, 0x47,
+        ];
+        let mut hasher = Sha1::new();
+        hasher.update(&bytes);
+        let hash = hasher.finalize();
+        assert_eq!(*XBE_SHA1, *hash);
+    }
 }
