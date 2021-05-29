@@ -1,33 +1,54 @@
 use std::{
-    fs::File,
     io,
-    io::{Read, Result, Seek, SeekFrom, Write},
+    io::{Cursor, Read, Result, Write},
 };
 
-/// adds `amount` bytes of padding to a byte vector
-fn pad(v: &mut Vec<u8>, amount: usize) {
-    for _ in 0..amount {
-        v.push(0);
-    }
-}
-
-/// adds padding to a byte vector until its len equals `to`
-fn pad_to(v: &mut Vec<u8>, to: usize) {
-    while v.len() < to {
-        v.push(0);
-    }
-}
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use itertools::Itertools;
 
 /// adds padding to a byte vector until its len is a multiple of `to`
 /// no padding is added if the len is already a multiple of `to`
 fn pad_to_nearest(v: &mut Vec<u8>, to: usize) {
-    while v.len() % to != 0 {
-        v.push(0);
-    }
+    let len = v.len();
+    let to = (to - len % to) % to;
+    v.resize(len + to, 0);
 }
 
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-#[derive(Default, Debug)]
+/// read characters until a null character (zero) is reached and return a utf8
+/// encoded string from those bytes
+fn read_null_string_ascii<T>(reader: &mut T) -> Result<String>
+where
+    T: Read,
+{
+    let mut string = vec![];
+    loop {
+        let c = reader.read_u8()?;
+        string.push(c);
+        if c == b'\0' {
+            break;
+        }
+    }
+    Ok(String::from_utf8(string).unwrap())
+}
+
+/// read characters until a null character (two zeroes in a row) is reached and return those
+/// characters as an array of `u16`s
+fn read_null_string_widestring<T>(file: &mut T) -> Result<Vec<u16>>
+where
+    T: Read,
+{
+    let mut string = vec![];
+    loop {
+        let c = file.read_u16::<LE>()?;
+        string.push(c);
+        if c == 0 {
+            break;
+        }
+    }
+    Ok(string)
+}
+
+#[derive(Debug)]
 pub struct Xbe {
     pub image_header: ImageHeader,
     pub certificate: Certificate,
@@ -42,6 +63,71 @@ pub struct Xbe {
 }
 
 impl Xbe {
+    pub fn load(file: &[u8]) -> std::io::Result<Xbe> {
+        let mut cur = Cursor::new(file);
+        // Read header data
+        let image_header = ImageHeader::load(&mut cur)?;
+
+        // Read certificate data
+        cur.set_position((image_header.certificate_address - image_header.base_address) as u64);
+        let certificate = Certificate::load(&mut cur)?;
+
+        // Read logo bitmap data
+        cur.set_position((image_header.logo_bitmap_address - image_header.base_address) as u64);
+        let logo_bitmap = LogoBitmap::load(&mut cur, image_header.logo_bitmap_size as usize)?;
+
+        // Read section data
+        cur.set_position((image_header.section_headers_address - image_header.base_address) as u64);
+        let section_headers =
+            SectionHeader::load(&mut cur, image_header.number_of_sections as usize)?;
+
+        let section_names = section_headers
+            .iter()
+            .map(|x| {
+                cur.set_position((x.section_name_address - image_header.base_address) as u64);
+                read_null_string_ascii(&mut cur)
+            })
+            .collect::<std::result::Result<_, _>>()?;
+
+        // Read debug path data
+        cur.set_position(
+            (image_header.debug_unicode_filename_address - image_header.base_address) as u64,
+        );
+        let debug_unicode_filename = read_null_string_widestring(&mut cur)?;
+        let debug_pathname = read_null_string_ascii(&mut cur)?;
+        cur.set_position((image_header.debug_filename_address - image_header.base_address) as u64);
+        let debug_filename = read_null_string_ascii(&mut cur)?;
+
+        // Read sections
+        let sections = section_headers
+            .iter()
+            .map(|hdr| {
+                cur.set_position(hdr.raw_address as u64);
+                Section::load(&mut cur, hdr.raw_size as usize)
+            })
+            .collect::<std::result::Result<_, _>>()?;
+
+        // Read library versions
+        cur.set_position(
+            (image_header.library_versions_address - image_header.base_address) as u64,
+        );
+        let library_version =
+            LibraryVersion::load(&mut cur, image_header.number_of_library_versions as usize)?;
+
+        Ok(Xbe {
+            image_header,
+            certificate,
+            section_headers,
+            section_names,
+            library_versions: library_version,
+            debug_filename,
+            debug_pathname,
+            debug_unicode_filename,
+            logo_bitmap,
+            sections,
+        })
+    }
+
     /// Serialize this XBE object to a valid .xbe executable
     pub fn serialize(&self) -> Result<Vec<u8>> {
         let mut img_hdr_v = self.image_header.serialize()?;
@@ -52,15 +138,15 @@ impl Xbe {
         let mut bitmap = self.logo_bitmap.serialize()?;
         let mut sections = self.serialize_sections()?;
 
-        pad_to(
-            &mut &mut img_hdr_v,
+        img_hdr_v.resize(
             (self.image_header.certificate_address - self.image_header.base_address) as usize,
+            0,
         );
         img_hdr_v.append(&mut ctf_v);
 
-        pad_to(
-            &mut img_hdr_v,
+        img_hdr_v.resize(
             (self.image_header.section_headers_address - self.image_header.base_address) as usize,
+            0,
         );
         img_hdr_v.append(&mut sec_hdrs);
         img_hdr_v.append(&mut sec_names);
@@ -70,10 +156,10 @@ impl Xbe {
         img_hdr_v.append(&mut library_versions);
 
         // Write Debug file/path names
-        pad_to(
-            &mut img_hdr_v,
+        img_hdr_v.resize(
             (self.image_header.debug_unicode_filename_address - self.image_header.base_address)
                 as usize,
+            0,
         );
 
         for x in self.debug_unicode_filename.iter() {
@@ -81,16 +167,16 @@ impl Xbe {
         }
 
         // debug filename is part of this string, just starting at a later offset
-        pad_to(
-            &mut img_hdr_v,
+        img_hdr_v.resize(
             (self.image_header.debug_pathname_address - self.image_header.base_address) as usize,
+            0,
         );
         img_hdr_v.write_all(self.debug_pathname.as_bytes())?;
 
         // Write bitmap
-        pad_to(
-            &mut img_hdr_v,
+        img_hdr_v.resize(
             (self.image_header.logo_bitmap_address - self.image_header.base_address) as usize,
+            0,
         );
         img_hdr_v.append(&mut bitmap);
 
@@ -101,7 +187,7 @@ impl Xbe {
         img_hdr_v.append(&mut sections);
 
         // End padding (not sure if this is present in all XBEs)
-        pad(&mut img_hdr_v, 0x1000);
+        img_hdr_v.resize(img_hdr_v.len() + 0x1000, 0);
 
         Ok(img_hdr_v)
     }
@@ -154,13 +240,12 @@ impl Xbe {
         // where the section is actually placed. Instead it places the sections order from
         // lowest raw address to highest and pads them to the next 0x1000 bytes.
         // This approach works for BfBB but may not for other xbes
-        let mut sorted_headers = vec![];
-        for i in 0..self.section_headers.len() {
-            sorted_headers.push((&self.section_headers[i], &self.sections[i]));
-        }
-        sorted_headers.sort_by(|a, b| a.0.raw_address.cmp(&b.0.raw_address));
-
-        for (_, sec) in sorted_headers {
+        for (_, sec) in self
+            .section_headers
+            .iter()
+            .zip(self.sections.iter())
+            .sorted_by(|(a, _), (b, _)| a.raw_address.cmp(&b.raw_address))
+        {
             // let s = &self.sections[i];
             v.append(&mut sec.serialize()?);
             pad_to_nearest(&mut v, 0x1000);
@@ -206,6 +291,50 @@ pub struct ImageHeader {
 }
 
 impl ImageHeader {
+    fn load<T>(reader: &mut T) -> Result<ImageHeader>
+    where
+        T: Read,
+    {
+        let mut magic_number = [0u8; 4];
+        reader.read_exact(&mut magic_number)?;
+        let mut digital_signature = [0u8; 0x100];
+        reader.read_exact(&mut digital_signature)?;
+
+        Ok(Self {
+            magic_number,
+            digital_signature,
+            base_address: reader.read_u32::<LE>()?,
+            size_of_headers: reader.read_u32::<LE>()?,
+            size_of_image: reader.read_u32::<LE>()?,
+            size_of_image_header: reader.read_u32::<LE>()?,
+            time_date: reader.read_u32::<LE>()?,
+            certificate_address: reader.read_u32::<LE>()?,
+            number_of_sections: reader.read_u32::<LE>()?,
+            section_headers_address: reader.read_u32::<LE>()?,
+            initialization_flags: reader.read_u32::<LE>()?,
+            entry_point: reader.read_u32::<LE>()?,
+            tls_address: reader.read_u32::<LE>()?,
+            pe_stack_commit: reader.read_u32::<LE>()?,
+            pe_heap_reserve: reader.read_u32::<LE>()?,
+            pe_head_commit: reader.read_u32::<LE>()?,
+            pe_base_address: reader.read_u32::<LE>()?,
+            pe_size_of_image: reader.read_u32::<LE>()?,
+            pe_checksum: reader.read_u32::<LE>()?,
+            pe_time_date: reader.read_u32::<LE>()?,
+            debug_pathname_address: reader.read_u32::<LE>()?,
+            debug_filename_address: reader.read_u32::<LE>()?,
+            debug_unicode_filename_address: reader.read_u32::<LE>()?,
+            kernel_image_thunk_address: reader.read_u32::<LE>()?,
+            non_kernel_import_directory_address: reader.read_u32::<LE>()?,
+            number_of_library_versions: reader.read_u32::<LE>()?,
+            library_versions_address: reader.read_u32::<LE>()?,
+            kernel_library_version_address: reader.read_u32::<LE>()?,
+            xapi_library_version_address: reader.read_u32::<LE>()?,
+            logo_bitmap_address: reader.read_u32::<LE>()?,
+            logo_bitmap_size: reader.read_u32::<LE>()?,
+        })
+    }
+
     fn serialize(&self) -> Result<Vec<u8>> {
         let mut v = vec![];
 
@@ -249,44 +378,6 @@ impl ImageHeader {
     }
 }
 
-impl Default for ImageHeader {
-    fn default() -> Self {
-        ImageHeader {
-            magic_number: [0u8; 4],
-            digital_signature: [0u8; 256],
-            base_address: 0,
-            size_of_headers: 0,
-            size_of_image: 0,
-            size_of_image_header: 0,
-            time_date: 0,
-            certificate_address: 0,
-            number_of_sections: 0,
-            section_headers_address: 0,
-            initialization_flags: 0,
-            entry_point: 0,
-            tls_address: 0,
-            pe_stack_commit: 0,
-            pe_heap_reserve: 0,
-            pe_head_commit: 0,
-            pe_base_address: 0,
-            pe_size_of_image: 0,
-            pe_checksum: 0,
-            pe_time_date: 0,
-            debug_pathname_address: 0,
-            debug_filename_address: 0,
-            debug_unicode_filename_address: 0,
-            kernel_image_thunk_address: 0,
-            non_kernel_import_directory_address: 0,
-            number_of_library_versions: 0,
-            library_versions_address: 0,
-            kernel_library_version_address: 0,
-            xapi_library_version_address: 0,
-            logo_bitmap_address: 0,
-            logo_bitmap_size: 0,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct Certificate {
     pub size: u32,
@@ -306,7 +397,42 @@ pub struct Certificate {
 }
 
 impl Certificate {
+    /// Used for converting to raw. The size of a certificate header
     pub const SIZE: u32 = 0x1ec;
+
+    fn load<T>(reader: &mut T) -> Result<Certificate>
+    where
+        T: Read,
+    {
+        let mut certificate = Certificate {
+            size: reader.read_u32::<LE>()?,
+            time_date: reader.read_u32::<LE>()?,
+            title_id: reader.read_u32::<LE>()?,
+            ..Default::default()
+        };
+        reader.read_exact(&mut certificate.title_name)?;
+        reader.read_exact(&mut certificate.alternate_title_ids)?;
+        certificate.allowed_media = reader.read_u32::<LE>()?;
+        certificate.game_region = reader.read_u32::<LE>()?;
+        certificate.game_ratings = reader.read_u32::<LE>()?;
+        certificate.disk_number = reader.read_u32::<LE>()?;
+        certificate.version = reader.read_u32::<LE>()?;
+        reader.read_exact(&mut certificate.lan_key)?;
+        reader.read_exact(&mut certificate.signature_key)?;
+        reader.read_exact(&mut certificate.alternate_signature_keys)?;
+
+        // This is kinda hacky but this shouldn't change unless the purpose of the remaing bytes
+        // is discovered and they are added as fields to this struct
+        // NOTE: we can't use size_of because it will include padding for the struct's layout in memory
+        const BYTES_READ: u32 = 0x1D0;
+        certificate
+            .unknown
+            .resize((certificate.size - BYTES_READ) as usize, 0);
+        reader.read_exact(&mut certificate.unknown)?;
+
+        Ok(certificate)
+    }
+
     fn serialize(&self) -> Result<Vec<u8>> {
         let mut v = vec![];
 
@@ -356,6 +482,15 @@ pub struct LogoBitmap {
 }
 
 impl LogoBitmap {
+    fn load<T>(file: &mut T, size: usize) -> Result<LogoBitmap>
+    where
+        T: Read,
+    {
+        let mut buf = vec![0u8; size];
+        file.read_exact(&mut buf)?;
+        Ok(LogoBitmap { bitmap: buf })
+    }
+
     fn serialize(&self) -> Result<Vec<u8>> {
         Ok(self.bitmap.clone())
     }
@@ -376,6 +511,32 @@ pub struct SectionHeader {
 }
 
 impl SectionHeader {
+    fn load<T>(reader: &mut T, number_of_sections: usize) -> Result<Vec<SectionHeader>>
+    where
+        T: Read,
+    {
+        let mut headers = Vec::with_capacity(number_of_sections);
+        for _ in 0..number_of_sections {
+            let mut h = SectionHeader {
+                section_flags: reader.read_u32::<LE>()?,
+                virtual_address: reader.read_u32::<LE>()?,
+                virtual_size: reader.read_u32::<LE>()?,
+                raw_address: reader.read_u32::<LE>()?,
+                raw_size: reader.read_u32::<LE>()?,
+                section_name_address: reader.read_u32::<LE>()?,
+                section_name_reference_count: reader.read_u32::<LE>()?,
+                head_shared_page_reference_count_address: reader.read_u32::<LE>()?,
+                tail_shared_page_reference_count_address: reader.read_u32::<LE>()?,
+                ..Default::default()
+            };
+            reader.read_exact(&mut h.section_digest)?;
+
+            headers.push(h);
+        }
+
+        Ok(headers)
+    }
+
     fn serialize(&self) -> Result<Vec<u8>> {
         let mut v = vec![];
 
@@ -404,6 +565,26 @@ pub struct LibraryVersion {
 }
 
 impl LibraryVersion {
+    fn load<T>(reader: &mut T, number_of_library_versions: usize) -> Result<Vec<LibraryVersion>>
+    where
+        T: Read,
+    {
+        let mut library_versions = Vec::with_capacity(number_of_library_versions);
+        for _ in 0..number_of_library_versions {
+            let mut l = LibraryVersion::default();
+
+            reader.read_exact(&mut l.library_name)?;
+            l.major_version = reader.read_u16::<LE>()?;
+            l.minor_version = reader.read_u16::<LE>()?;
+            l.build_version = reader.read_u16::<LE>()?;
+            l.library_flags = reader.read_u16::<LE>()?;
+
+            library_versions.push(l);
+        }
+
+        Ok(library_versions)
+    }
+
     fn serialize(&self) -> Result<Vec<u8>> {
         let mut v = vec![];
 
@@ -438,260 +619,16 @@ impl Section {
     }
 }
 
-pub fn load_xbe(mut file: File) -> std::io::Result<Xbe> {
-    // Read header data
-    let image_header = load_image_header(&mut file)?;
+impl Section {
+    fn load<T>(reader: &mut T, raw_size: usize) -> Result<Section>
+    where
+        T: Read,
+    {
+        let mut bytes = vec![0u8; raw_size];
+        reader.read_exact(&mut bytes)?;
 
-    // Read certificate data
-    let certificate = load_certificate(&mut file, &image_header)?;
-
-    // Read logo bitmap data
-    let logo_bitmap = load_logo_bitmap(&mut file, &image_header)?;
-
-    // Read section data
-    let section_headers = load_section_headers(&mut file, &image_header)?;
-    let section_names = load_section_names(&mut file, &image_header, &section_headers)?;
-
-    // Read debug path data
-    let debug_filename = load_debug_filename(&mut file, &image_header)?;
-    let debug_pathname = load_debug_pathname(&mut file, &image_header)?;
-    let debug_unicode_filename = load_debug_unicode_filename(&mut file, &image_header)?;
-
-    // Read sections
-    let mut sections = vec![];
-    for sec_hdr in section_headers.iter() {
-        sections.push(load_section(&mut file, sec_hdr)?);
+        Ok(Section { bytes })
     }
-
-    // Read library versions
-    let library_version = load_library_versions(&mut file, &image_header)?;
-    Ok(Xbe {
-        image_header,
-        certificate,
-        section_headers,
-        section_names,
-        library_versions: library_version,
-        debug_filename,
-        debug_pathname,
-        debug_unicode_filename,
-        logo_bitmap,
-        sections,
-    })
-}
-
-fn load_image_header(file: &mut File) -> Result<ImageHeader> {
-    let mut header = ImageHeader::default();
-
-    file.read_exact(&mut header.magic_number)?;
-    file.read_exact(&mut header.digital_signature)?;
-    header.base_address = file.read_u32::<LE>()?;
-    header.size_of_headers = file.read_u32::<LE>()?;
-    header.size_of_image = file.read_u32::<LE>()?;
-    header.size_of_image_header = file.read_u32::<LE>()?;
-    header.time_date = file.read_u32::<LE>()?;
-    header.certificate_address = file.read_u32::<LE>()?;
-    header.number_of_sections = file.read_u32::<LE>()?;
-    header.section_headers_address = file.read_u32::<LE>()?;
-    header.initialization_flags = file.read_u32::<LE>()?;
-    header.entry_point = file.read_u32::<LE>()?;
-    header.tls_address = file.read_u32::<LE>()?;
-    header.pe_stack_commit = file.read_u32::<LE>()?;
-    header.pe_heap_reserve = file.read_u32::<LE>()?;
-    header.pe_head_commit = file.read_u32::<LE>()?;
-    header.pe_base_address = file.read_u32::<LE>()?;
-    header.pe_size_of_image = file.read_u32::<LE>()?;
-    header.pe_checksum = file.read_u32::<LE>()?;
-    header.pe_time_date = file.read_u32::<LE>()?;
-    header.debug_pathname_address = file.read_u32::<LE>()?;
-    header.debug_filename_address = file.read_u32::<LE>()?;
-    header.debug_unicode_filename_address = file.read_u32::<LE>()?;
-    header.kernel_image_thunk_address = file.read_u32::<LE>()?;
-    header.non_kernel_import_directory_address = file.read_u32::<LE>()?;
-    header.number_of_library_versions = file.read_u32::<LE>()?;
-    header.library_versions_address = file.read_u32::<LE>()?;
-    header.kernel_library_version_address = file.read_u32::<LE>()?;
-    header.xapi_library_version_address = file.read_u32::<LE>()?;
-    header.logo_bitmap_address = file.read_u32::<LE>()?;
-    header.logo_bitmap_size = file.read_u32::<LE>()?;
-    Ok(header)
-}
-
-fn load_certificate(file: &mut File, header: &ImageHeader) -> Result<Certificate> {
-    let start = (header.certificate_address - header.base_address) as u64;
-    file.seek(SeekFrom::Start(start))?;
-
-    let mut certificate = Certificate {
-        size: file.read_u32::<LE>()?,
-        time_date: file.read_u32::<LE>()?,
-        title_id: file.read_u32::<LE>()?,
-        ..Default::default()
-    };
-    file.read_exact(&mut certificate.title_name)?;
-    file.read_exact(&mut certificate.alternate_title_ids)?;
-    certificate.allowed_media = file.read_u32::<LE>()?;
-    certificate.game_region = file.read_u32::<LE>()?;
-    certificate.game_ratings = file.read_u32::<LE>()?;
-    certificate.disk_number = file.read_u32::<LE>()?;
-    certificate.version = file.read_u32::<LE>()?;
-    file.read_exact(&mut certificate.lan_key)?;
-    file.read_exact(&mut certificate.signature_key)?;
-    file.read_exact(&mut certificate.alternate_signature_keys)?;
-
-    while file.stream_position()? < start + certificate.size as u64 {
-        certificate.unknown.push(file.read_u8()?);
-    }
-
-    Ok(certificate)
-}
-
-fn load_section_headers(file: &mut File, image_header: &ImageHeader) -> Result<Vec<SectionHeader>> {
-    file.seek(SeekFrom::Start(
-        (image_header.section_headers_address - image_header.base_address).into(),
-    ))?;
-
-    let mut headers = Vec::with_capacity(image_header.number_of_sections as usize);
-    for _ in 0..image_header.number_of_sections {
-        let mut h = SectionHeader {
-            section_flags: file.read_u32::<LE>()?,
-            virtual_address: file.read_u32::<LE>()?,
-            virtual_size: file.read_u32::<LE>()?,
-            raw_address: file.read_u32::<LE>()?,
-            raw_size: file.read_u32::<LE>()?,
-            section_name_address: file.read_u32::<LE>()?,
-            section_name_reference_count: file.read_u32::<LE>()?,
-            head_shared_page_reference_count_address: file.read_u32::<LE>()?,
-            tail_shared_page_reference_count_address: file.read_u32::<LE>()?,
-            ..Default::default()
-        };
-        file.read_exact(&mut h.section_digest)?;
-
-        headers.push(h);
-    }
-
-    Ok(headers)
-}
-
-fn load_section_names(
-    file: &mut File,
-    image_header: &ImageHeader,
-    sections_headers: &[SectionHeader],
-) -> Result<Vec<String>> {
-    let mut strings = vec![];
-
-    for hdr in sections_headers.iter() {
-        file.seek(SeekFrom::Start(
-            (hdr.section_name_address - image_header.base_address) as u64,
-        ))?;
-
-        // Read null-terminated string
-        let mut string = vec![];
-        loop {
-            let c = file.read_u8()?;
-            string.push(c);
-            if c == b'\0' {
-                break;
-            }
-        }
-        strings.push(String::from_utf8(string).expect("Section name not valid"));
-    }
-
-    Ok(strings)
-}
-
-fn load_library_versions(
-    file: &mut File,
-    image_header: &ImageHeader,
-) -> Result<Vec<LibraryVersion>> {
-    file.seek(SeekFrom::Start(
-        (image_header.library_versions_address - image_header.base_address).into(),
-    ))?;
-
-    let mut library_versions = Vec::with_capacity(image_header.number_of_library_versions as usize);
-    for _ in 0..image_header.number_of_library_versions {
-        let mut l = LibraryVersion::default();
-
-        file.read_exact(&mut l.library_name)?;
-        l.major_version = file.read_u16::<LE>()?;
-        l.minor_version = file.read_u16::<LE>()?;
-        l.build_version = file.read_u16::<LE>()?;
-        l.library_flags = file.read_u16::<LE>()?;
-
-        library_versions.push(l);
-    }
-
-    Ok(library_versions)
-}
-
-fn load_debug_filename(file: &mut File, image_header: &ImageHeader) -> Result<String> {
-    file.seek(SeekFrom::Start(
-        (image_header.debug_filename_address - image_header.base_address) as u64,
-    ))?;
-
-    // Read null-terminated string
-    let mut string = vec![];
-    loop {
-        let c = file.read_u8()?;
-        string.push(c);
-        if c == b'\0' {
-            break;
-        }
-    }
-    Ok(String::from_utf8(string).unwrap())
-}
-
-fn load_debug_pathname(file: &mut File, image_header: &ImageHeader) -> Result<String> {
-    file.seek(SeekFrom::Start(
-        (image_header.debug_pathname_address - image_header.base_address) as u64,
-    ))?;
-
-    // Read null-terminated string
-    let mut string = vec![];
-    loop {
-        let c = file.read_u8()?;
-        string.push(c);
-        if c == b'\0' {
-            break;
-        }
-    }
-    Ok(String::from_utf8(string).unwrap())
-}
-
-fn load_debug_unicode_filename(file: &mut File, image_header: &ImageHeader) -> Result<Vec<u16>> {
-    file.seek(SeekFrom::Start(
-        (image_header.debug_unicode_filename_address - image_header.base_address) as u64,
-    ))?;
-
-    // Read null-terminated string
-    let mut string = vec![];
-    loop {
-        let c = file.read_u16::<LE>()?;
-        string.push(c);
-        if c == 0 {
-            break;
-        }
-    }
-    Ok(string)
-}
-
-fn load_logo_bitmap(file: &mut File, image_header: &ImageHeader) -> Result<LogoBitmap> {
-    file.seek(SeekFrom::Start(
-        (image_header.logo_bitmap_address - image_header.base_address).into(),
-    ))?;
-
-    let mut buf = vec![0u8; image_header.logo_bitmap_size as usize];
-    file.read_exact(&mut buf)?;
-    Ok(LogoBitmap { bitmap: buf })
-}
-
-fn load_section(file: &mut File, section_header: &SectionHeader) -> Result<Section> {
-    file.seek(SeekFrom::Start(section_header.raw_address as u64))?;
-    let mut section = Section::default();
-
-    let mut buf = vec![0u8; section_header.raw_size as usize];
-    file.read_exact(&mut buf)?;
-    section.bytes = buf;
-
-    Ok(section)
 }
 
 #[cfg(test)]
@@ -702,7 +639,7 @@ mod tests {
     fn deserialize_and_reserialize() {
         use sha1::{Digest, Sha1};
 
-        let xbe = load_xbe(std::fs::File::open("bin/default.xbe").unwrap()).unwrap();
+        let xbe = Xbe::load(&std::fs::read("bin/default.xbe").unwrap()).unwrap();
         let bytes = xbe.serialize().unwrap();
 
         const XBE_SHA1: &'static [u8] = &[

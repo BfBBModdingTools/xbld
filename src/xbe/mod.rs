@@ -25,7 +25,7 @@ impl Xbe {
     where
         P: AsRef<Path>,
     {
-        Self::from_raw(raw::load_xbe(std::fs::File::open(path).unwrap()).unwrap())
+        Self::from_raw(raw::Xbe::load(&std::fs::read(path).unwrap()).unwrap())
     }
 
     pub fn write_to_file<P>(&self, path: P)
