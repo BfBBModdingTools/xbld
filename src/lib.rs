@@ -10,7 +10,7 @@ use std::{
     io::{Cursor, Write},
 };
 
-use goblin::pe::{self, relocation::Relocation, section_table::SectionTable, symbol::Symbol, Coff};
+use goblin::pe::{self, symbol::Symbol, Coff};
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 
@@ -89,11 +89,7 @@ impl Patch<'_> {
         //TODO: This assumes patch is at beginning of .text
         section_map.0.get_mut(".mtext").unwrap().virtual_address = self.virtual_address;
 
-        process_relocations(
-            symbol_table,
-            &mut section_map,
-            std::slice::from_ref(self.patchfile),
-        )?;
+        section_map.process_relocations(symbol_table, std::slice::from_ref(self.patchfile))?;
 
         let xbe_bytes = xbe
             .get_bytes_mut(self.virtual_address..self.virtual_address + 5)
@@ -229,6 +225,83 @@ impl<'a> SectionMap<'a> {
             ".rdata" => ".mrdata",
             _ => return None,
         })
+    }
+
+    pub fn process_relocations(
+        &mut self,
+        symbol_table: &SymbolTable,
+        files: &[ObjectFile],
+    ) -> Result<()> {
+        for file in files.iter() {
+            for section in file.coff.sections.iter() {
+                for reloc in section.relocations(&file.bytes).unwrap_or_default() {
+                    // find data to update
+                    // TODO: This is assuming 32 bit relocations
+                    // TODO: handle section_number -1 and 0
+                    // TODO: remove panic
+                    let section_data = self
+                        .get_mut(
+                            section
+                                .name()
+                                .map_err(|e| Error::Goblin(file.filename.to_string(), e))?,
+                        )
+                        .unwrap_or_else(|| {
+                            panic!("Could not find section .m{}", section.name().unwrap())
+                        });
+
+                    // Find target symbol and name
+                    let (symbol_name, symbol) =
+                        match file.coff.symbols.get(reloc.symbol_table_index as usize) {
+                            Some(s) => s,
+                            None => continue, //Error?
+                        };
+                    let symbol_name = match symbol_name {
+                        Some(name) => name,
+                        None => symbol
+                            .name(&file.coff.strings)
+                            .map_err(|e| Error::Goblin(file.filename.to_string(), e))?,
+                    };
+
+                    // Find virtual address of symbol
+                    let target_address = match symbol_table.0.get(symbol_name) {
+                        Some(addr) => *addr,
+                        _ => continue, //Error?
+                    };
+
+                    // We are assuming i386 relocations only (Which is fine for Xbox)
+                    match reloc.typ {
+                        goblin::pe::relocation::IMAGE_REL_I386_DIR32 => section_data
+                            .relative_update_u32(
+                                file.filename,
+                                reloc.virtual_address,
+                                target_address,
+                            ),
+
+                        goblin::pe::relocation::IMAGE_REL_I386_REL32 => {
+                            let sec_address =
+                                section_data.file_offset_start.get(file.filename).expect(
+                                    "Failed to get file start information to process a relocation.",
+                                ) + reloc.virtual_address;
+
+                            // Calculate relative jump based on distance from the virtual address of the next instruction
+                            // (AKA the value of the CPU program counter after reading this instruction) and the target
+                            const INSTRUCTION_SIZE: u32 = 5;
+                            let from_address =
+                                sec_address + section_data.virtual_address + INSTRUCTION_SIZE;
+                            section_data.relative_update_i32(
+                                file.filename,
+                                sec_address,
+                                target_address as i32 - from_address as i32,
+                            );
+                        }
+                        //TODO: Support all relocations
+                        _ => panic!("relocation type {} not supported", reloc.typ),
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -397,7 +470,7 @@ pub fn inject(config: Configuration) -> Result<()> {
     }
 
     // process relocations for mods
-    process_relocations(&symbol_table, &mut section_map, &mods)?;
+    section_map.process_relocations(&symbol_table, &mods)?;
 
     // read patch config
     let patch_config =
@@ -443,121 +516,6 @@ pub fn inject(config: Configuration) -> Result<()> {
         )
     }
     xbe.write_to_file(config.output_xbe);
-
-    Ok(())
-}
-
-fn process_relocations(
-    symbol_table: &SymbolTable,
-    section_map: &mut SectionMap,
-    files: &[ObjectFile],
-) -> Result<()> {
-    for file in files.iter() {
-        for section in file.coff.sections.iter() {
-            for reloc in section.relocations(&file.bytes).unwrap_or_default() {
-                // We are assuming i386 relocations only (Which is fine for Xbox)
-                match reloc.typ {
-                    goblin::pe::relocation::IMAGE_REL_I386_DIR32 => {
-                        relocation_dir32(file, &reloc, section, symbol_table, section_map)?
-                    }
-
-                    goblin::pe::relocation::IMAGE_REL_I386_REL32 => {
-                        relocation_rel32(file, &reloc, section, symbol_table, section_map)?
-                    }
-                    //TODO: Support all relocations
-                    _ => panic!("relocation type {} not supported", reloc.typ),
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn relocation_dir32(
-    file: &ObjectFile,
-    reloc: &Relocation,
-    section: &SectionTable,
-    symbol_table: &SymbolTable,
-    section_map: &mut SectionMap,
-) -> Result<()> {
-    let symbol = match file.coff.symbols.get(reloc.symbol_table_index as usize) {
-        None => return Ok(()),
-        Some(symbol) => symbol.1,
-    };
-
-    let symbol_name = symbol
-        .name(&file.coff.strings)
-        .map_err(|e| Error::Goblin(file.filename.to_string(), e))?;
-
-    // Find virtual address of symbol
-    let target_address = match symbol_table.0.get(symbol_name) {
-        Some(addr) => *addr,
-        _ => return Ok(()),
-    };
-
-    // find data to update
-    // TODO: This is assuming 32 bit relocations
-    // TODO: handle section_number -1 and 0
-    let sec_data = section_map
-        .get_mut(
-            section
-                .name()
-                .map_err(|e| Error::Goblin(file.filename.to_string(), e))?,
-        )
-        .unwrap_or_else(|| panic!("Could not find section .m{}", section.name().unwrap()));
-
-    sec_data.relative_update_u32(file.filename, reloc.virtual_address, target_address);
-
-    Ok(())
-}
-
-fn relocation_rel32(
-    file: &ObjectFile,
-    reloc: &Relocation,
-    section: &SectionTable,
-    symbol_table: &SymbolTable,
-    section_map: &mut SectionMap,
-) -> Result<()> {
-    let symbol = match file.coff.symbols.get(reloc.symbol_table_index as usize) {
-        None => return Ok(()),
-        Some(symbol) => symbol.1,
-    };
-
-    let symbol_name = symbol
-        .name(&file.coff.strings)
-        .map_err(|e| Error::Goblin(file.filename.to_string(), e))?;
-
-    // Find virtual address of target symbol
-    let target_address = match symbol_table.0.get(symbol_name) {
-        Some(addr) => *addr,
-        _ => return Ok(()),
-    };
-
-    // find data to update
-    let sec_data = section_map
-        .get_mut(
-            section
-                .name()
-                .map_err(|e| Error::Goblin(file.filename.to_string(), e))?,
-        )
-        .unwrap_or_else(|| panic!("Could not find section .m{}", section.name().unwrap()));
-
-    let sec_address = sec_data
-        .file_offset_start
-        .get(file.filename)
-        .expect("Failed to get file start information to process a relocation.")
-        + reloc.virtual_address;
-
-    // Calculate relative jump based on distance from the virtual address of the next instruction
-    // (AKA the value of the CPU program counter after reading this instruction) and the target
-    const INSTRUCTION_SIZE: u32 = 5;
-    let from_address = sec_address + sec_data.virtual_address + INSTRUCTION_SIZE;
-    sec_data.relative_update_i32(
-        file.filename,
-        sec_address,
-        target_address as i32 - from_address as i32,
-    );
 
     Ok(())
 }
