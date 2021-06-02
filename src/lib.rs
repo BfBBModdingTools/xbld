@@ -522,6 +522,8 @@ pub fn inject(config: Configuration) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
+
     use super::{inject, Configuration, SectionInProgress};
 
     #[test]
@@ -539,11 +541,9 @@ mod tests {
 
     #[test]
     fn file_offsets() {
-        let bytes_a: Vec<u8> = (0u8..12u8).collect();
-        let bytes_b: Vec<u8> = (0u8..8u8).collect();
         let mut section = SectionInProgress::default();
-        section.add_bytes(&bytes_a, "bytesA");
-        section.add_bytes(&bytes_b, "bytesB");
+        section.add_bytes(&(0..12).collect_vec(), "bytesA");
+        section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
         assert_eq!(section.file_offset_start.len(), 2);
         assert_eq!(*section.file_offset_start.get("bytesA").unwrap(), 0);
@@ -552,16 +552,24 @@ mod tests {
 
     #[test]
     fn add_bytes() {
-        let bytes_a: Vec<u8> = (0u8..12u8).collect();
-        let bytes_b: Vec<u8> = (0u8..8u8).collect();
-        let mut combined = bytes_a.clone();
-        combined.append(&mut bytes_b.clone());
-
         let mut section = SectionInProgress::default();
-        section.add_bytes(&bytes_a, "bytesA");
-        section.add_bytes(&bytes_b, "bytesB");
+        section.add_bytes(&(0..12).collect_vec(), "bytesA");
+        section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
         assert_eq!(section.bytes.len(), 20);
-        assert_eq!(section.bytes, combined);
+        assert_eq!(section.bytes, (0..12).chain(0..8).collect_vec());
+    }
+
+    #[test]
+    fn relative_update() {
+        let mut section = SectionInProgress::default();
+        section.add_bytes(&(0..12).collect_vec(), "bytesA");
+        section.add_bytes(&(0..8).collect_vec(), "bytesB");
+
+        section.relative_update_u32("bytesB", 0, 0x100);
+        assert_eq!(
+            section.bytes,
+            [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 2, 2, 3, 4, 5, 6, 7]
+        )
     }
 }
