@@ -80,40 +80,26 @@ impl Xbe {
 
     // TODO
     #[allow(dead_code)]
-    pub fn get_bytes(&self, virtual_range: Range<u32>) -> Result<&[u8], String> {
+    pub fn get_bytes(&self, virtual_range: Range<u32>) -> Option<&[u8]> {
         let section = self.sections.iter().find(|s| {
             s.virtual_address <= virtual_range.start
                 && s.virtual_address + s.virtual_size >= virtual_range.end
-        });
-
-        let section = section.ok_or_else(|| {
-            format!(
-                "Virtual address range [{},{}) is not used in this XBE",
-                virtual_range.start, virtual_range.end
-            )
         })?;
 
         let start = (virtual_range.start - section.virtual_address) as usize;
         let end = (virtual_range.end - section.virtual_address) as usize;
-        Ok(&section.data[start..end])
+        Some(&section.data[start..end])
     }
 
-    pub fn get_bytes_mut(&mut self, virtual_range: Range<u32>) -> Result<&mut [u8], String> {
+    pub fn get_bytes_mut(&mut self, virtual_range: Range<u32>) -> Option<&mut [u8]> {
         let section = self.sections.iter_mut().find(|s| {
             s.virtual_address <= virtual_range.start
                 && s.virtual_address + s.virtual_size >= virtual_range.end
-        });
-
-        let section = section.ok_or_else(|| {
-            format!(
-                "Virtual address range [{},{}) is not used in this XBE",
-                virtual_range.start, virtual_range.end
-            )
         })?;
 
         let start = (virtual_range.start - section.virtual_address) as usize;
         let end = (virtual_range.end - section.virtual_address) as usize;
-        Ok(&mut section.data[start..end])
+        Some(&mut section.data[start..end])
     }
 
     fn convert_to_raw(&self) -> raw::Xbe {

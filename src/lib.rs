@@ -84,27 +84,58 @@ struct Patch<'a> {
 
 impl Patch<'_> {
     pub fn apply(&self, xbe: &mut Xbe, symbol_table: &SymbolTable) -> Result<()> {
+        // find patch symbols
+        let start_symbol = self.find_symbol(self.start_symbol_name)?;
+        let end_symbol = self.find_symbol(self.end_symbol_name)?;
+        if start_symbol.section_number != end_symbol.section_number {
+            return Err(Error::Patch(
+                self.start_symbol_name.to_string(),
+                error::PatchError::SectionMismatch(),
+            ));
+        }
+
+        let sec_name = self
+            .patchfile
+            .coff
+            .sections
+            .get(start_symbol.section_number as usize - 1)
+            .unwrap()
+            .name()
+            .map_err(|e| Error::Goblin(self.patchfile.filename.to_string(), e))?;
+
         // Process Patch Coff (symbols have already been read)
         let mut section_map = SectionMap::from_data(std::slice::from_ref(self.patchfile));
         //TODO: This assumes patch is at beginning of .text
-        section_map.0.get_mut(".mtext").unwrap().virtual_address = self.virtual_address;
+        section_map
+            .get_mut(sec_name)
+            .ok_or_else(|| {
+                Error::Patch(
+                    self.start_symbol_name.to_string(),
+                    error::PatchError::MissingSection(sec_name.to_string()),
+                )
+            })?
+            .virtual_address = self.virtual_address;
 
         section_map.process_relocations(symbol_table, std::slice::from_ref(self.patchfile))?;
 
         let xbe_bytes = xbe
             .get_bytes_mut(self.virtual_address..self.virtual_address + 5)
-            .unwrap();
+            .ok_or_else(|| {
+                Error::Patch(
+                    self.start_symbol_name.to_string(),
+                    error::PatchError::InvalidAddress(self.virtual_address),
+                )
+            })?;
 
-        let start_symbol = self.find_symbol(self.start_symbol_name);
-        let end_symbol = self.find_symbol(self.end_symbol_name);
-
-        if start_symbol.section_number != end_symbol.section_number {
-            panic!("Patch start and end symbol are not in the same section");
-        }
-
-        // TODO: HARDEDCODED BADD
-        let patch_bytes = &section_map.0.get(".mtext").unwrap().bytes
-            [start_symbol.value as usize..end_symbol.value as usize];
+        let patch_bytes = &section_map
+            .get(sec_name)
+            .ok_or_else(|| {
+                Error::Patch(
+                    self.start_symbol_name.to_string(),
+                    error::PatchError::MissingSection(sec_name.to_string()),
+                )
+            })?
+            .bytes[start_symbol.value as usize..end_symbol.value as usize];
 
         let mut c = Cursor::new(xbe_bytes);
         c.write_all(patch_bytes).expect("Failed to apply patch");
@@ -112,25 +143,23 @@ impl Patch<'_> {
         Ok(())
     }
 
-    fn find_symbol(&self, name: &str) -> Symbol {
-        let fail = || -> ! {
-            panic!(
-                "Patch Symbol '{}' is not present in patch file '{}'.",
-                name, self.patchfile.filename
-            );
-        };
+    fn find_symbol(&self, name: &str) -> Result<Symbol> {
+        for (_, n, s) in self.patchfile.coff.symbols.iter() {
+            let n = match n {
+                Some(n) => n,
+                None => s
+                    .name(&self.patchfile.coff.strings)
+                    .map_err(|e| Error::Goblin(self.patchfile.filename.to_string(), e))?,
+            };
 
-        self.patchfile
-            .coff
-            .symbols
-            .iter()
-            .find(|(_, _, s)| {
-                s.name(&self.patchfile.coff.strings)
-                    .unwrap_or_else(|_| fail())
-                    == name
-            })
-            .unwrap_or_else(|| fail())
-            .2
+            if n == name {
+                return Ok(s);
+            }
+        }
+        Err(Error::Patch(
+            self.patchfile.filename.to_string(),
+            error::PatchError::UndefinedSymbol(name.to_string()),
+        ))
     }
 }
 
@@ -237,38 +266,47 @@ impl<'a> SectionMap<'a> {
                 for reloc in section.relocations(&file.bytes).unwrap_or_default() {
                     // find data to update
                     // TODO: This is assuming 32 bit relocations
-                    // TODO: handle section_number -1 and 0
-                    // TODO: remove panic
-                    let section_data = self
-                        .get_mut(
-                            section
-                                .name()
-                                .map_err(|e| Error::Goblin(file.filename.to_string(), e))?,
+                    // TODO: handle section_number -2,-1 and 0
+                    let section_name = section
+                        .name()
+                        .map_err(|e| Error::Goblin(file.filename.to_string(), e))?;
+                    let section_data = self.get_mut(section_name).ok_or_else(|| {
+                        Error::Relocation(
+                            file.filename.to_string(),
+                            error::RelocationError::MissingSection(section_name.to_string()),
                         )
-                        .unwrap_or_else(|| {
-                            panic!("Could not find section .m{}", section.name().unwrap())
-                        });
+                    })?;
 
                     // Find target symbol and name
-                    let (symbol_name, symbol) =
-                        match file.coff.symbols.get(reloc.symbol_table_index as usize) {
-                            Some(s) => s,
-                            None => continue, //Error?
-                        };
+                    let (symbol_name, symbol) = file
+                        .coff
+                        .symbols
+                        .get(reloc.symbol_table_index as usize)
+                        .ok_or_else(|| {
+                            Error::Relocation(
+                                file.filename.to_string(),
+                                error::RelocationError::MissingSymbol(reloc.symbol_table_index),
+                            )
+                        })?;
                     let symbol_name = match symbol_name {
-                        Some(name) => name,
-                        None => symbol
-                            .name(&file.coff.strings)
-                            .map_err(|e| Error::Goblin(file.filename.to_string(), e))?,
+                        Some(n) => n,
+                        None => symbol.name(&file.coff.strings).map_err(|e| {
+                            Error::Relocation(
+                                file.filename.to_string(),
+                                error::RelocationError::MissingName(e),
+                            )
+                        })?,
                     };
 
                     // Find virtual address of symbol
-                    let target_address = match symbol_table.0.get(symbol_name) {
-                        Some(addr) => *addr,
-                        _ => continue, //Error?
-                    };
+                    let target_address = *symbol_table.0.get(symbol_name).ok_or_else(|| {
+                        Error::Relocation(
+                            file.filename.to_string(),
+                            error::RelocationError::MissingAddress(symbol_name.to_string()),
+                        )
+                    })?;
 
-                    // We are assuming i386 relocations only (Which is fine for Xbox)
+                    // We are targeting Xbox so we use x86 relocations
                     match reloc.typ {
                         goblin::pe::relocation::IMAGE_REL_I386_DIR32 => section_data
                             .relative_update_u32(
@@ -276,7 +314,6 @@ impl<'a> SectionMap<'a> {
                                 reloc.virtual_address,
                                 target_address,
                             ),
-
                         goblin::pe::relocation::IMAGE_REL_I386_REL32 => {
                             let sec_address =
                                 section_data.file_offset_start.get(file.filename).expect(
