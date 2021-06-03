@@ -105,7 +105,6 @@ impl Patch<'_> {
 
         // Process Patch Coff (symbols have already been read)
         let mut section_map = SectionMap::from_data(std::slice::from_ref(self.patchfile));
-        //TODO: This assumes patch is at beginning of .text
         section_map
             .get_mut(sec_name)
             .ok_or_else(|| {
