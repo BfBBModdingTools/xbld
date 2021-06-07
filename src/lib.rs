@@ -568,20 +568,21 @@ pub fn inject(config: Configuration) -> Result<()> {
     }
 
     // insert sections into XBE
-    for (name, sec) in section_map
+    for (_, sec) in section_map
         .0
         .into_iter()
         .sorted_by(|a, b| a.1.virtual_address.cmp(&b.1.virtual_address))
     {
+        let flags = SectionFlags::PRELOAD
+            | match sec.name.as_str() {
+                ".mtext" => SectionFlags::EXECUTABLE,
+                ".mdata" | ".mbss" => SectionFlags::WRITABLE,
+                _ => SectionFlags::PRELOAD, //No "zero" value
+            };
         let virtual_size = sec.bytes.len() as u32;
         xbe.add_section(
-            name.to_owned() + "\0",
-            SectionFlags::PRELOAD
-                | match name {
-                    ".mtext" => SectionFlags::EXECUTABLE,
-                    ".mdata" | ".mbss" => SectionFlags::WRITABLE,
-                    _ => SectionFlags::PRELOAD, //No "zero" value
-                },
+            sec.name + "\0",
+            flags,
             sec.bytes,
             sec.virtual_address,
             virtual_size,
