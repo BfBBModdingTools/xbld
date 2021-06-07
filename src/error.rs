@@ -30,6 +30,7 @@ impl std::fmt::Display for Error {
 #[derive(Debug)]
 pub enum RelocationError {
     MissingSection(String),
+    MissingSectionOffset(String),
     MissingSymbol(u32),
     MissingName(goblin::error::Error),
     MissingAddress(String),
@@ -41,6 +42,9 @@ impl std::fmt::Display for RelocationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RelocationError::MissingSection(s) => write!(f, "Could not locate section '{}'", s),
+            RelocationError::MissingSectionOffset(s) => {
+                write!(f, "Could not locate section offset for section '{}'", s)
+            }
             RelocationError::MissingSymbol(i) => {
                 write!(f, "Could not locate symbol with index '{}'", i)
             }

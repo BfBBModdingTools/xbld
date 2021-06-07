@@ -24,14 +24,24 @@ pub struct Configuration {
     pub output_xbe: String,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 struct SectionInProgress<'a> {
+    name: String,
     bytes: Vec<u8>,
     file_offset_start: HashMap<&'a str, u32>,
     virtual_address: u32,
 }
 
 impl<'a> SectionInProgress<'a> {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            bytes: Vec::new(),
+            file_offset_start: HashMap::new(),
+            virtual_address: 0,
+        }
+    }
+
     pub fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
         self.file_offset_start
             .insert(filename, self.bytes.len() as u32);
@@ -40,21 +50,47 @@ impl<'a> SectionInProgress<'a> {
 
     /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
     /// add `value`, and overwrite the original value with the result.
-    pub fn relative_update_u32(&mut self, filename: &str, file_section_address: u32, value: u32) {
+    pub fn relative_update_u32(
+        &mut self,
+        filename: &str,
+        file_section_address: u32,
+        value: u32,
+    ) -> Result<()> {
         let mut cur = Cursor::new(&mut self.bytes);
 
-        let d_start = self.file_offset_start.get(filename).unwrap() + file_section_address;
+        // rust compiler is literally stupid and we need to borrow this field now
+        // in order to capture with the closure (because the closure will borrow)
+        // the entire struct
+        let name = &self.name;
+
+        // find the offset of the data to update
+        let d_start = self.file_offset_start.get(filename).ok_or_else(|| {
+            Error::Relocation(
+                filename.to_string(),
+                error::RelocationError::MissingSectionOffset(name.clone()),
+            )
+        })? + file_section_address;
+
+        // read the current value, so we can add it to the new value
         cur.set_position(d_start as u64);
-        let offset = cur.read_u32::<LE>().unwrap();
+        let offset = cur
+            .read_u32::<LE>()
+            .map_err(|e| Error::Io(filename.to_string(), e))?;
         cur.set_position(d_start as u64);
 
         // update data
-        cur.write_u32::<LE>(value + offset).unwrap();
+        cur.write_u32::<LE>(value + offset)
+            .map_err(|e| Error::Io(filename.to_string(), e))
     }
 
     /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
     /// add `value`, and overwrite the original value with the result.
-    pub fn relative_update_i32(&mut self, filename: &str, file_section_address: u32, value: i32) {
+    pub fn relative_update_i32(
+        &mut self,
+        filename: &str,
+        file_section_address: u32,
+        value: i32,
+    ) -> Result<()> {
         self.relative_update_u32(filename, file_section_address, value as u32)
     }
 }
@@ -210,25 +246,25 @@ impl<'a> SectionMap<'a> {
             if let Some(b) = section_bytes.text {
                 section_map
                     .entry(".mtext")
-                    .or_insert_with(SectionInProgress::default)
+                    .or_insert_with(|| SectionInProgress::new(".mtext".to_string()))
                     .add_bytes(b, file.filename);
             }
             if let Some(b) = section_bytes.data {
                 section_map
                     .entry(".mdata")
-                    .or_insert_with(SectionInProgress::default)
+                    .or_insert_with(|| SectionInProgress::new(".mdata".to_string()))
                     .add_bytes(b, file.filename);
             }
             if let Some(b) = section_bytes.bss {
                 section_map
                     .entry(".mbss")
-                    .or_insert_with(SectionInProgress::default)
+                    .or_insert_with(|| SectionInProgress::new(".mbss".to_string()))
                     .add_bytes(b, file.filename);
             }
             if let Some(b) = section_bytes.rdata {
                 section_map
                     .entry(".mrdata")
-                    .or_insert_with(SectionInProgress::default)
+                    .or_insert_with(|| SectionInProgress::new(".mrdata".to_string()))
                     .add_bytes(b, file.filename);
             }
         }
@@ -312,7 +348,7 @@ impl<'a> SectionMap<'a> {
                                 file.filename,
                                 reloc.virtual_address,
                                 target_address,
-                            ),
+                            )?,
                         goblin::pe::relocation::IMAGE_REL_I386_REL32 => {
                             let sec_address =
                                 section_data.file_offset_start.get(file.filename).expect(
@@ -328,7 +364,7 @@ impl<'a> SectionMap<'a> {
                                 file.filename,
                                 sec_address,
                                 target_address as i32 - from_address as i32,
-                            );
+                            )?;
                         }
                         //TODO: Support all relocations
                         _ => panic!("relocation type {} not supported", reloc.typ),
@@ -577,7 +613,7 @@ mod tests {
 
     #[test]
     fn file_offsets() {
-        let mut section = SectionInProgress::default();
+        let mut section = SectionInProgress::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
@@ -588,7 +624,7 @@ mod tests {
 
     #[test]
     fn add_bytes() {
-        let mut section = SectionInProgress::default();
+        let mut section = SectionInProgress::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
@@ -598,11 +634,11 @@ mod tests {
 
     #[test]
     fn relative_update() {
-        let mut section = SectionInProgress::default();
+        let mut section = SectionInProgress::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
-        section.relative_update_u32("bytesB", 0, 0x100);
+        section.relative_update_u32("bytesB", 0, 0x100).unwrap();
         assert_eq!(
             section.bytes,
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 2, 2, 3, 4, 5, 6, 7]
