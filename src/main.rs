@@ -119,8 +119,8 @@ mod tests {
         assert!(c.is_ok());
         let c = c.unwrap();
         assert_eq!(c.patches.len(), 1);
-        assert_eq!(c.modfiles.len(), 1);
-        assert_eq!(c.input_xbe, "bin/default.xbe".to_string());
-        assert_eq!(c.output_xbe, "bin/output.xbe".to_string());
+        assert_eq!(c.modfiles.len(), 2);
+        assert_eq!(c.input_xbe.as_str(), "bin/default.xbe");
+        assert_eq!(c.output_xbe.as_str(), "bin/output.xbe");
     }
 }
