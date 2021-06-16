@@ -1,19 +1,17 @@
+use bfbb_linker::error::{Error, ParseError, Result};
+use serde::Deserialize;
 use std::{env, process};
 
 fn main() {
-    let config = match parse_config(env::args().collect()) {
+    let config = match parse_config(env::args()) {
         Ok(c) => c,
-        Err(ParseError::HelpRequested) => {
-            println!("Usage: {} [--] OUTPUT\n", env::args().next().unwrap());
-            println!("  --help        Show this help page");
-            println!("  -p, --patches List of patches to be applied");
-            println!("  -m, --mods    List of mods to be injected");
-            println!("  -i, --input   Base XBE file to inject code into");
-            process::exit(0);
+        Err(e @ Error::Config(_)) => {
+            eprintln!("{}", e);
+            process::exit(0)
         }
-        Err(ParseError::MissingArgument(e)) => {
-            println!("Missing Argument: \n\t{}", e);
-            process::exit(1);
+        Err(e) => {
+            eprintln!("{}", e);
+            process::exit(1)
         }
     };
     println!("{:?}", &config);
@@ -24,21 +22,16 @@ fn main() {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ParseError {
-    HelpRequested,
-    MissingArgument(&'static str),
-}
-
-fn parse_config(args: Vec<String>) -> Result<bfbb_linker::Configuration, ParseError> {
+fn parse_config<'a, I>(args: I) -> Result<bfbb_linker::Configuration<'a>>
+where
+    I: Iterator<Item = std::string::String>,
+{
     // TODO: Implment switch alternatives for flags
     const FLAG_HELP: &str = "--help";
-    const FLAG_PATCHES: &str = "--patches";
-    const FLAG_MODS: &str = "--mods";
+    const FLAG_CONFIG: &str = "--config";
     const FLAG_INPUT_XBE: &str = "--input";
 
-    let mut patchfiles: Option<Vec<String>> = None;
-    let mut modfiles: Option<Vec<String>> = None;
+    let mut config: Option<String> = None;
     let mut input_xbe: Option<String> = None;
     let mut output_xbe: Option<String> = None;
 
@@ -46,54 +39,88 @@ fn parse_config(args: Vec<String>) -> Result<bfbb_linker::Configuration, ParseEr
     let mut arg_iter = args.into_iter();
     while let Some(next) = arg_iter.next() {
         match next.as_str() {
-            FLAG_PATCHES => {
-                patchfiles = Some(
-                    arg_iter
-                        .next()
-                        .unwrap()
-                        .split(':')
-                        .map(|s| s.to_string())
-                        .collect(),
-                )
-            }
-            FLAG_MODS => {
-                modfiles = Some(
-                    arg_iter
-                        .next()
-                        .unwrap()
-                        .split(':')
-                        .map(|s| s.to_string())
-                        .collect(),
-                )
-            }
+            FLAG_CONFIG => config = Some(arg_iter.next().unwrap()),
             FLAG_INPUT_XBE => input_xbe = Some(arg_iter.next().unwrap()),
-            FLAG_HELP => return Err(ParseError::HelpRequested),
+            FLAG_HELP => return Err(Error::Config(ParseError::HelpRequested)),
             s => output_xbe = Some(s.to_owned()),
         }
     }
 
+    #[derive(Deserialize)]
+    struct Conf {
+        patch: Vec<Inner>,
+        modfiles: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct Inner {
+        patchfile: String,
+        start_symbol: String,
+        end_symbol: String,
+        virtual_address: u32,
+    }
+
     // Unwrap parameters
-    let patchfiles = match patchfiles {
-        Some(p) => p,
-        None => return Err(ParseError::MissingArgument("Patch file(s) are required.")),
-    };
-    let modfiles = match modfiles {
-        Some(m) => m,
-        None => return Err(ParseError::MissingArgument("Mod files(s) are required.")),
-    };
-    let input_xbe = match input_xbe {
-        Some(i) => i,
-        None => return Err(ParseError::MissingArgument("Input XBE is required.")),
-    };
-    let output_xbe = match output_xbe {
-        Some(o) => o,
-        None => return Err(ParseError::MissingArgument("Output XBE is required")),
-    };
+    let config = config.ok_or(Error::Config(ParseError::MissingArgument(
+        "Config file is required.",
+    )))?;
+    let config: Conf = toml::from_str(
+        std::fs::read_to_string(config.as_str())
+            .map_err(|e| Error::Io(config, e))?
+            .as_str(),
+    )
+    .map_err(|e| Error::Config(ParseError::ConfigParse(e)))?;
+    let input_xbe = input_xbe.ok_or(Error::Config(ParseError::MissingArgument(
+        "Input XBE is required.",
+    )))?;
+    let output_xbe = output_xbe.ok_or(Error::Config(ParseError::MissingArgument(
+        "Output XBE is required",
+    )))?;
 
     Ok(bfbb_linker::Configuration {
-        patchfiles,
-        modfiles,
+        patches: config
+            .patch
+            .into_iter()
+            .map(|p| {
+                bfbb_linker::Patch::new(
+                    p.patchfile,
+                    p.start_symbol,
+                    p.end_symbol,
+                    p.virtual_address,
+                )
+            })
+            .collect::<std::result::Result<_, _>>()?,
+        modfiles: config
+            .modfiles
+            .into_iter()
+            .map(bfbb_linker::ObjectFile::new)
+            .collect::<std::result::Result<_, _>>()?,
         input_xbe,
         output_xbe,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli() {
+        let args = vec![
+            "program_name".to_string(),
+            "--config".to_string(),
+            "bin/conf.toml".to_string(),
+            "--input".to_string(),
+            "bin/default.xbe".to_string(),
+            "bin/output.xbe".to_string(),
+        ];
+        let c = parse_config(args.into_iter());
+
+        assert!(c.is_ok());
+        let c = c.unwrap();
+        assert_eq!(c.patches.len(), 1);
+        assert_eq!(c.modfiles.len(), 1);
+        assert_eq!(c.input_xbe, "bin/default.xbe".to_string());
+        assert_eq!(c.output_xbe, "bin/output.xbe".to_string());
+    }
 }

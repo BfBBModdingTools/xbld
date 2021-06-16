@@ -1,37 +1,43 @@
 pub mod error;
 mod xbe;
 
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use error::{Error, Result};
-
+use goblin::pe::{self, symbol::Symbol, Coff};
 use itertools::Itertools;
 use std::{
     collections::hash_map::HashMap,
     fs,
     io::{Cursor, Write},
 };
-
-use goblin::pe::{self, symbol::Symbol, Coff};
-
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-
 use xbe::{SectionFlags, Xbe};
 
-#[derive(Debug, Clone)]
-pub struct Configuration {
-    pub patchfiles: Vec<String>,
-    pub modfiles: Vec<String>,
+#[derive(Debug)]
+pub struct Configuration<'a> {
+    pub patches: Vec<Patch<'a>>,
+    pub modfiles: Vec<ObjectFile<'a>>,
     pub input_xbe: String,
     pub output_xbe: String,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug)]
 struct SectionInProgress<'a> {
+    name: String,
     bytes: Vec<u8>,
     file_offset_start: HashMap<&'a str, u32>,
     virtual_address: u32,
 }
 
 impl<'a> SectionInProgress<'a> {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            bytes: Vec::new(),
+            file_offset_start: HashMap::new(),
+            virtual_address: 0,
+        }
+    }
+
     pub fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
         self.file_offset_start
             .insert(filename, self.bytes.len() as u32);
@@ -40,53 +46,111 @@ impl<'a> SectionInProgress<'a> {
 
     /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
     /// add `value`, and overwrite the original value with the result.
-    pub fn relative_update_u32(&mut self, filename: &str, file_section_address: u32, value: u32) {
+    pub fn relative_update_u32(
+        &mut self,
+        filename: &str,
+        file_section_address: u32,
+        value: u32,
+    ) -> Result<()> {
         let mut cur = Cursor::new(&mut self.bytes);
 
-        let d_start = self.file_offset_start.get(filename).unwrap() + file_section_address;
+        // rust compiler is literally stupid and we need to borrow this field now
+        // in order to capture with the closure (because the closure will borrow)
+        // the entire struct
+        let name = &self.name;
+
+        // find the offset of the data to update
+        let d_start = self.file_offset_start.get(filename).ok_or_else(|| {
+            Error::Relocation(
+                filename.to_string(),
+                error::RelocationError::MissingSectionOffset(name.clone()),
+            )
+        })? + file_section_address;
+
+        // read the current value, so we can add it to the new value
         cur.set_position(d_start as u64);
-        let offset = cur.read_u32::<LE>().unwrap();
+        let offset = cur
+            .read_u32::<LE>()
+            .map_err(|e| Error::Io(filename.to_string(), e))?;
         cur.set_position(d_start as u64);
 
         // update data
-        cur.write_u32::<LE>(value + offset).unwrap();
+        cur.write_u32::<LE>(value + offset)
+            .map_err(|e| Error::Io(filename.to_string(), e))
     }
 
     /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
     /// add `value`, and overwrite the original value with the result.
-    pub fn relative_update_i32(&mut self, filename: &str, file_section_address: u32, value: i32) {
+    pub fn relative_update_i32(
+        &mut self,
+        filename: &str,
+        file_section_address: u32,
+        value: i32,
+    ) -> Result<()> {
         self.relative_update_u32(filename, file_section_address, value as u32)
     }
 }
 
-struct ObjectFile<'a> {
-    bytes: &'a [u8],
+#[derive(Debug)]
+pub struct ObjectFile<'a> {
+    filename: String,
+    bytes: Vec<u8>,
     coff: Coff<'a>,
-    filename: &'a str,
 }
 
 impl<'a> ObjectFile<'a> {
-    fn new(bytes: &'a [u8], filename: &'a str) -> Result<Self> {
+    pub fn new(filename: String) -> Result<Self> {
+        unsafe fn extend_lifetime<'short, 'long, R>(r: &'short R) -> &'long R
+        where
+            R: ?Sized,
+        {
+            std::mem::transmute::<&'short R, &'long R>(r)
+        }
+
+        let bytes = fs::read(filename.as_str()).map_err(|e| Error::Io(filename.to_string(), e))?;
+
+        // SAFETY: We are referecing data stored on the heap that will be allocated for the
+        // lifetime of this object (`'a`). Therefore we can safely extend the liftime of the
+        // reference to that data to the lifetime of this object
+        let coff = Coff::parse(unsafe { extend_lifetime(&*bytes) })
+            .map_err(|e| Error::Goblin(filename.clone(), e))?;
+
         Ok(Self {
-            bytes,
-            coff: Coff::parse(&bytes).map_err(|e| Error::Goblin(filename.to_string(), e))?,
             filename,
+            bytes,
+            coff,
         })
     }
 }
 
-struct Patch<'a> {
-    patchfile: &'a ObjectFile<'a>,
-    start_symbol_name: &'a str,
-    end_symbol_name: &'a str,
+#[derive(Debug)]
+pub struct Patch<'a> {
+    patchfile: ObjectFile<'a>,
+    start_symbol_name: String,
+    end_symbol_name: String,
     virtual_address: u32,
 }
 
-impl Patch<'_> {
-    pub fn apply(&self, xbe: &mut Xbe, symbol_table: &SymbolTable) -> Result<()> {
+impl<'a> Patch<'a> {
+    pub fn new(
+        filename: String,
+        start_symbol_name: String,
+        end_symbol_name: String,
+        virtual_address: u32,
+    ) -> Result<Self> {
+        let patchfile = ObjectFile::new(filename)?;
+        Ok(Self {
+            patchfile,
+            start_symbol_name,
+            end_symbol_name,
+            virtual_address,
+        })
+    }
+
+    fn apply(&self, xbe: &mut Xbe, symbol_table: &SymbolTable) -> Result<()> {
         // find patch symbols
-        let start_symbol = self.find_symbol(self.start_symbol_name)?;
-        let end_symbol = self.find_symbol(self.end_symbol_name)?;
+        let start_symbol = self.find_symbol(self.start_symbol_name.as_str())?;
+        let end_symbol = self.find_symbol(self.end_symbol_name.as_str())?;
         if start_symbol.section_number != end_symbol.section_number {
             return Err(Error::Patch(
                 self.start_symbol_name.to_string(),
@@ -104,8 +168,7 @@ impl Patch<'_> {
             .map_err(|e| Error::Goblin(self.patchfile.filename.to_string(), e))?;
 
         // Process Patch Coff (symbols have already been read)
-        let mut section_map = SectionMap::from_data(std::slice::from_ref(self.patchfile));
-        //TODO: This assumes patch is at beginning of .text
+        let mut section_map = SectionMap::from_data(std::slice::from_ref(&self.patchfile));
         section_map
             .get_mut(sec_name)
             .ok_or_else(|| {
@@ -116,7 +179,7 @@ impl Patch<'_> {
             })?
             .virtual_address = self.virtual_address;
 
-        section_map.process_relocations(symbol_table, std::slice::from_ref(self.patchfile))?;
+        section_map.process_relocations(symbol_table, std::slice::from_ref(&self.patchfile))?;
 
         let xbe_bytes = xbe
             .get_bytes_mut(self.virtual_address..self.virtual_address + 5)
@@ -197,7 +260,7 @@ impl<'a> SectionBytes<'a> {
 }
 
 /// Maps from a given section name to it's section data
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SectionMap<'a>(HashMap<&'a str, SectionInProgress<'a>>);
 
 impl<'a> SectionMap<'a> {
@@ -211,26 +274,26 @@ impl<'a> SectionMap<'a> {
             if let Some(b) = section_bytes.text {
                 section_map
                     .entry(".mtext")
-                    .or_insert_with(SectionInProgress::default)
-                    .add_bytes(b, file.filename);
+                    .or_insert_with(|| SectionInProgress::new(".mtext".to_string()))
+                    .add_bytes(b, file.filename.as_str());
             }
             if let Some(b) = section_bytes.data {
                 section_map
                     .entry(".mdata")
-                    .or_insert_with(SectionInProgress::default)
-                    .add_bytes(b, file.filename);
+                    .or_insert_with(|| SectionInProgress::new(".mdata".to_string()))
+                    .add_bytes(b, file.filename.as_str());
             }
             if let Some(b) = section_bytes.bss {
                 section_map
                     .entry(".mbss")
-                    .or_insert_with(SectionInProgress::default)
-                    .add_bytes(b, file.filename);
+                    .or_insert_with(|| SectionInProgress::new(".mbss".to_string()))
+                    .add_bytes(b, file.filename.as_str());
             }
             if let Some(b) = section_bytes.rdata {
                 section_map
                     .entry(".mrdata")
-                    .or_insert_with(SectionInProgress::default)
-                    .add_bytes(b, file.filename);
+                    .or_insert_with(|| SectionInProgress::new(".mrdata".to_string()))
+                    .add_bytes(b, file.filename.as_str());
             }
         }
         Self(section_map)
@@ -310,15 +373,18 @@ impl<'a> SectionMap<'a> {
                     match reloc.typ {
                         goblin::pe::relocation::IMAGE_REL_I386_DIR32 => section_data
                             .relative_update_u32(
-                                file.filename,
+                                file.filename.as_str(),
                                 reloc.virtual_address,
                                 target_address,
-                            ),
+                            )?,
                         goblin::pe::relocation::IMAGE_REL_I386_REL32 => {
-                            let sec_address =
-                                section_data.file_offset_start.get(file.filename).expect(
+                            let sec_address = section_data
+                                .file_offset_start
+                                .get(file.filename.as_str())
+                                .expect(
                                     "Failed to get file start information to process a relocation.",
-                                ) + reloc.virtual_address;
+                                )
+                                + reloc.virtual_address;
 
                             // Calculate relative jump based on distance from the virtual address of the next instruction
                             // (AKA the value of the CPU program counter after reading this instruction) and the target
@@ -326,10 +392,10 @@ impl<'a> SectionMap<'a> {
                             let from_address =
                                 sec_address + section_data.virtual_address + INSTRUCTION_SIZE;
                             section_data.relative_update_i32(
-                                file.filename,
+                                file.filename.as_str(),
                                 sec_address,
                                 target_address as i32 - from_address as i32,
-                            );
+                            )?;
                         }
                         //TODO: Support all relocations
                         _ => panic!("relocation type {} not supported", reloc.typ),
@@ -352,7 +418,12 @@ impl SymbolTable {
         Self(HashMap::new())
     }
 
-    fn extract_symbols(&mut self, section_map: &SectionMap, obj: &ObjectFile) -> Result<()> {
+    fn extract_symbols(
+        &mut self,
+        section_map: &SectionMap,
+        obj: &ObjectFile,
+        config: &Configuration,
+    ) -> Result<()> {
         for (_index, _name, sym) in obj.coff.symbols.iter() {
             if sym.section_number < 1 {
                 continue;
@@ -378,29 +449,20 @@ impl SymbolTable {
 
             match sym.storage_class {
                 pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.typ == 0x20 => {
+                    let sym_name = sym
+                        .name(&obj.coff.strings)
+                        .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?;
                     self.0.insert(
-                        sym.name(&obj.coff.strings)
-                            .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?
-                            .to_owned(),
-                        match sec_data.file_offset_start.get(obj.filename) {
+                        sym_name.to_owned(),
+                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
                             Some(addr) => *addr + sym.value + sec_data.virtual_address,
                             None => {
-                                let patch_conf = std::fs::read_to_string("bin/patch.conf")
-                                    .map_err(|e| Error::Io(obj.filename.to_string(), e))?;
-                                let mut split = patch_conf.split(' ');
-
-                                // Todo deduplicate conf parsing and extract parsing to module
-                                let patchname = split.next().unwrap();
-                                //skip end symbol
-                                split.next();
-                                let address: u32 = split.next().unwrap().parse().unwrap();
-
-                                if sym
-                                    .name(&obj.coff.strings)
-                                    .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?
-                                    == patchname
+                                if let Some(patch) = config
+                                    .patches
+                                    .iter()
+                                    .find(|p| p.start_symbol_name == sym_name)
                                 {
-                                    address
+                                    patch.virtual_address
                                 } else {
                                     continue;
                                 }
@@ -413,7 +475,7 @@ impl SymbolTable {
                         sym.name(&obj.coff.strings)
                             .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?
                             .to_owned(),
-                        match sec_data.file_offset_start.get(obj.filename) {
+                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
                             Some(addr) => *addr + sym.value + sec_data.virtual_address,
                             None => continue,
                         },
@@ -432,7 +494,7 @@ impl SymbolTable {
                         sym.name(&obj.coff.strings)
                             .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?
                             .to_owned(),
-                        match sec_data.file_offset_start.get(obj.filename) {
+                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
                             Some(addr) => *addr + sec_data.virtual_address,
                             None => continue,
                         },
@@ -461,37 +523,11 @@ impl SymbolTable {
 /// - process base game patch files
 /// - insert sections into xbe
 pub fn inject(config: Configuration) -> Result<()> {
-    let patchbytes: Vec<Vec<u8>> = config
-        .patchfiles
-        .iter()
-        .map(|f| fs::read(f).map_err(|e| (f.clone(), e)))
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|(f, e)| Error::Io(f, e))?;
-    let patches: Vec<ObjectFile> = config
-        .patchfiles
-        .iter()
-        .zip(patchbytes.iter())
-        .map(|(f, b)| ObjectFile::new(b, f))
-        .collect::<std::result::Result<_, _>>()?;
-
-    let modbytes: Vec<Vec<u8>> = config
-        .modfiles
-        .iter()
-        .map(|f| fs::read(f).map_err(|e| (f.clone(), e)))
-        .collect::<std::result::Result<_, _>>()
-        .map_err(|(f, e)| Error::Io(f, e))?;
-    let mods: Vec<ObjectFile> = config
-        .modfiles
-        .iter()
-        .zip(modbytes.iter())
-        .map(|(f, b)| ObjectFile::new(b, f))
-        .collect::<std::result::Result<_, _>>()?;
-
     // combine sections
-    let mut section_map = SectionMap::from_data(&mods);
+    let mut section_map = SectionMap::from_data(&config.modfiles);
 
     // Assign virtual addresses
-    let mut xbe = Xbe::from_path(config.input_xbe);
+    let mut xbe = Xbe::from_path(config.input_xbe.as_str());
     let mut last_virtual_address = xbe.get_next_virtual_address();
 
     for (_, sec) in section_map.0.iter_mut().sorted_by(|a, b| a.0.cmp(b.0)) {
@@ -502,51 +538,39 @@ pub fn inject(config: Configuration) -> Result<()> {
 
     // build symbol table
     let mut symbol_table = SymbolTable::new();
-    for obj in patches.iter().chain(mods.iter()) {
-        symbol_table.extract_symbols(&section_map, obj)?;
+    for obj in config
+        .patches
+        .iter()
+        .map(|p| &p.patchfile)
+        .chain(config.modfiles.iter())
+    {
+        symbol_table.extract_symbols(&section_map, obj, &config)?;
     }
 
     // process relocations for mods
-    section_map.process_relocations(&symbol_table, &mods)?;
-
-    // read patch config
-    let patch_config =
-        String::from_utf8(std::fs::read("bin/patch.conf").expect("Could not read config file."))
-            .expect("Could not read config file.");
-    let patches: Vec<Patch> = patch_config
-        .split(' ')
-        .tuples()
-        .zip(patches.iter())
-        .map(
-            |((start_symbol_name, end_symbol_name, addr), patchfile)| Patch {
-                patchfile,
-                start_symbol_name,
-                end_symbol_name,
-                virtual_address: addr.parse().expect("Malformed address in config"),
-            },
-        )
-        .collect();
+    section_map.process_relocations(&symbol_table, &config.modfiles)?;
 
     // apply patches
-    for patch in &patches {
+    for patch in config.patches.iter() {
         patch.apply(&mut xbe, &symbol_table)?;
     }
 
     // insert sections into XBE
-    for (name, sec) in section_map
+    for (_, sec) in section_map
         .0
         .into_iter()
         .sorted_by(|a, b| a.1.virtual_address.cmp(&b.1.virtual_address))
     {
+        let flags = SectionFlags::PRELOAD
+            | match sec.name.as_str() {
+                ".mtext" => SectionFlags::EXECUTABLE,
+                ".mdata" | ".mbss" => SectionFlags::WRITABLE,
+                _ => SectionFlags::PRELOAD, //No "zero" value
+            };
         let virtual_size = sec.bytes.len() as u32;
         xbe.add_section(
-            name.to_owned() + "\0",
-            SectionFlags::PRELOAD
-                | match name {
-                    ".mtext" => SectionFlags::EXECUTABLE,
-                    ".mdata" | ".mbss" => SectionFlags::WRITABLE,
-                    _ => SectionFlags::PRELOAD, //No "zero" value
-                },
+            sec.name + "\0",
+            flags,
             sec.bytes,
             sec.virtual_address,
             virtual_size,
@@ -561,13 +585,19 @@ pub fn inject(config: Configuration) -> Result<()> {
 mod tests {
     use itertools::Itertools;
 
-    use super::{inject, Configuration, SectionInProgress};
+    use super::*;
 
     #[test]
     fn no_panic() {
         match inject(Configuration {
-            patchfiles: vec!["bin/framehook_patch.o".to_string()],
-            modfiles: vec!["bin/loader.o".to_string()],
+            patches: vec![Patch::new(
+                "bin/framehook_patch.o".to_string(),
+                "_framehook_patch".to_string(),
+                "_framehook_patch_end".to_string(),
+                396158,
+            )
+            .unwrap()],
+            modfiles: vec![ObjectFile::new("bin/loader.o".to_string()).unwrap()],
             input_xbe: "bin/default.xbe".to_string(),
             output_xbe: "bin/output.xbe".to_string(),
         }) {
@@ -578,7 +608,7 @@ mod tests {
 
     #[test]
     fn file_offsets() {
-        let mut section = SectionInProgress::default();
+        let mut section = SectionInProgress::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
@@ -589,7 +619,7 @@ mod tests {
 
     #[test]
     fn add_bytes() {
-        let mut section = SectionInProgress::default();
+        let mut section = SectionInProgress::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
@@ -599,11 +629,11 @@ mod tests {
 
     #[test]
     fn relative_update() {
-        let mut section = SectionInProgress::default();
+        let mut section = SectionInProgress::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
-        section.relative_update_u32("bytesB", 0, 0x100);
+        section.relative_update_u32("bytesB", 0, 0x100).unwrap();
         assert_eq!(
             section.bytes,
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 2, 2, 3, 4, 5, 6, 7]

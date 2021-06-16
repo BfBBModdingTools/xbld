@@ -11,6 +11,8 @@ goblin="0.4.0"
 bitflags="1.2.1"
 byteorder = "1"
 itertools = "0.10.0"
+serde = {version = "1.0", features=["derive"]}
+toml = "0.5"
 
 [dev-dependencies]
 sha-1="0.9.4"
