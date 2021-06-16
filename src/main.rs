@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::{env, process};
 
 fn main() {
-    let config = match parse_config(env::args().collect()) {
+    let config = match parse_config(env::args()) {
         Ok(c) => c,
         Err(e @ Error::Config(_)) => {
             eprintln!("{}", e);
@@ -22,7 +22,10 @@ fn main() {
     }
 }
 
-fn parse_config<'a>(args: Vec<String>) -> Result<bfbb_linker::Configuration<'a>> {
+fn parse_config<'a, I>(args: I) -> Result<bfbb_linker::Configuration<'a>>
+where
+    I: Iterator<Item = std::string::String>,
+{
     // TODO: Implment switch alternatives for flags
     const FLAG_HELP: &str = "--help";
     const FLAG_CONFIG: &str = "--config";
@@ -111,7 +114,7 @@ mod tests {
             "bin/default.xbe".to_string(),
             "bin/output.xbe".to_string(),
         ];
-        let c = parse_config(args);
+        let c = parse_config(args.into_iter());
 
         assert!(c.is_ok());
         let c = c.unwrap();
