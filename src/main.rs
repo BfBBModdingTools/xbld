@@ -1,11 +1,10 @@
-use bfbb_linker::error::{Error, ParseError, Result};
-use serde::Deserialize;
+use bfbb_linker::error::{CliError, Error, Result};
 use std::{env, process};
 
 fn main() {
-    let config = match parse_config(env::args()) {
+    let config = match parse_args(env::args()) {
         Ok(c) => c,
-        Err(e @ Error::Config(_)) => {
+        Err(e @ Error::Cli(_)) => {
             eprintln!("{}", e);
             process::exit(0)
         }
@@ -22,7 +21,7 @@ fn main() {
     }
 }
 
-fn parse_config<'a, I>(args: I) -> Result<bfbb_linker::Configuration<'a>>
+fn parse_args<'a, I>(mut args: I) -> Result<bfbb_linker::Configuration<'a>>
 where
     I: Iterator<Item = std::string::String>,
 {
@@ -36,68 +35,30 @@ where
     let mut output_xbe: Option<String> = None;
 
     // Skip over this program's name
-    let mut arg_iter = args.into_iter();
-    while let Some(next) = arg_iter.next() {
+    args.next();
+    while let Some(next) = args.next() {
         match next.as_str() {
-            FLAG_CONFIG => config = Some(arg_iter.next().unwrap()),
-            FLAG_INPUT_XBE => input_xbe = Some(arg_iter.next().unwrap()),
-            FLAG_HELP => return Err(Error::Config(ParseError::HelpRequested)),
+            FLAG_CONFIG => config = Some(args.next().unwrap()),
+            FLAG_INPUT_XBE => input_xbe = Some(args.next().unwrap()),
+            FLAG_HELP => return Err(Error::Cli(CliError::HelpRequested)),
             s => output_xbe = Some(s.to_owned()),
         }
     }
 
-    #[derive(Deserialize)]
-    struct Conf {
-        patch: Vec<Inner>,
-        modfiles: Vec<String>,
-    }
-
-    #[derive(Deserialize)]
-    struct Inner {
-        patchfile: String,
-        start_symbol: String,
-        end_symbol: String,
-        virtual_address: u32,
-    }
-
     // Unwrap parameters
-    let config = config.ok_or(Error::Config(ParseError::MissingArgument(
+    let config = config.ok_or(Error::Cli(CliError::MissingArgument(
         "Config file is required.",
     )))?;
-    let config: Conf = toml::from_str(
-        std::fs::read_to_string(config.as_str())
-            .map_err(|e| Error::Io(config, e))?
-            .as_str(),
-    )
-    .map_err(|e| Error::Config(ParseError::ConfigParse(e)))?;
-    let input_xbe = input_xbe.ok_or(Error::Config(ParseError::MissingArgument(
+    let config = std::fs::read_to_string(config.as_str()).map_err(|e| Error::Io(config, e))?;
+
+    let input_xbe = input_xbe.ok_or(Error::Cli(CliError::MissingArgument(
         "Input XBE is required.",
     )))?;
-    let output_xbe = output_xbe.ok_or(Error::Config(ParseError::MissingArgument(
+    let output_xbe = output_xbe.ok_or(Error::Cli(CliError::MissingArgument(
         "Output XBE is required",
     )))?;
 
-    Ok(bfbb_linker::Configuration {
-        patches: config
-            .patch
-            .into_iter()
-            .map(|p| {
-                bfbb_linker::Patch::new(
-                    p.patchfile,
-                    p.start_symbol,
-                    p.end_symbol,
-                    p.virtual_address,
-                )
-            })
-            .collect::<std::result::Result<_, _>>()?,
-        modfiles: config
-            .modfiles
-            .into_iter()
-            .map(bfbb_linker::ObjectFile::new)
-            .collect::<std::result::Result<_, _>>()?,
-        input_xbe,
-        output_xbe,
-    })
+    bfbb_linker::Configuration::from_toml(config.as_str(), input_xbe, output_xbe)
 }
 
 #[cfg(test)]
@@ -114,13 +75,8 @@ mod tests {
             "bin/default.xbe".to_string(),
             "bin/output.xbe".to_string(),
         ];
-        let c = parse_config(args.into_iter());
+        let c = parse_args(args.into_iter());
 
         assert!(c.is_ok());
-        let c = c.unwrap();
-        assert_eq!(c.patches.len(), 1);
-        assert_eq!(c.modfiles.len(), 2);
-        assert_eq!(c.input_xbe.as_str(), "bin/default.xbe");
-        assert_eq!(c.output_xbe.as_str(), "bin/output.xbe");
     }
 }

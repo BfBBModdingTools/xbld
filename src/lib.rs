@@ -14,105 +14,73 @@ use xbe::{SectionFlags, Xbe};
 
 #[derive(Debug)]
 pub struct Configuration<'a> {
-    pub patches: Vec<Patch<'a>>,
-    pub modfiles: Vec<ObjectFile<'a>>,
-    pub input_xbe: String,
-    pub output_xbe: String,
+    patches: Vec<Patch<'a>>,
+    modfiles: Vec<ObjectFile<'a>>,
+    input_xbe: String,
+    output_xbe: String,
 }
 
-#[derive(Debug)]
-struct SectionInProgress<'a> {
-    name: String,
-    bytes: Vec<u8>,
-    file_offset_start: HashMap<&'a str, u32>,
-    virtual_address: u32,
-}
-
-impl<'a> SectionInProgress<'a> {
-    pub fn new(name: String) -> Self {
-        Self {
-            name,
-            bytes: Vec::new(),
-            file_offset_start: HashMap::new(),
-            virtual_address: 0,
+impl Configuration<'_> {
+    pub fn from_toml(conf: &str, input_xbe: String, output_xbe: String) -> Result<Self> {
+        // These structs define the format of the config file
+        #[derive(serde::Deserialize)]
+        struct ConfToml {
+            patch: Vec<PatchToml>,
+            modfiles: Vec<String>,
         }
-    }
+        #[derive(serde::Deserialize)]
+        struct PatchToml {
+            patchfile: String,
+            start_symbol: String,
+            end_symbol: String,
+            virtual_address: u32,
+        }
+        let conf: ConfToml = toml::from_str(conf)?;
 
-    pub fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
-        self.file_offset_start
-            .insert(filename, self.bytes.len() as u32);
-        self.bytes.append(&mut bytes.to_owned());
-    }
+        // Create patches from configuration data
+        let patches = conf
+            .patch
+            .into_iter()
+            .map(|patch| {
+                Patch::new(
+                    patch.patchfile,
+                    patch.start_symbol,
+                    patch.end_symbol,
+                    patch.virtual_address,
+                )
+            })
+            .collect::<Result<_>>()?;
 
-    /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
-    /// add `value`, and overwrite the original value with the result.
-    pub fn relative_update_u32(
-        &mut self,
-        filename: &str,
-        file_section_address: u32,
-        value: u32,
-    ) -> Result<()> {
-        let mut cur = Cursor::new(&mut self.bytes);
-
-        // rust compiler is literally stupid and we need to borrow this field now
-        // in order to capture with the closure (because the closure will borrow)
-        // the entire struct
-        let name = &self.name;
-
-        // find the offset of the data to update
-        let d_start = self.file_offset_start.get(filename).ok_or_else(|| {
-            Error::Relocation(
-                filename.to_string(),
-                error::RelocationError::MissingSectionOffset(name.clone()),
-            )
-        })? + file_section_address;
-
-        // read the current value, so we can add it to the new value
-        cur.set_position(d_start as u64);
-        let offset = cur
-            .read_u32::<LE>()
-            .map_err(|e| Error::Io(filename.to_string(), e))?;
-        cur.set_position(d_start as u64);
-
-        // update data
-        cur.write_u32::<LE>(value + offset)
-            .map_err(|e| Error::Io(filename.to_string(), e))
-    }
-
-    /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
-    /// add `value`, and overwrite the original value with the result.
-    pub fn relative_update_i32(
-        &mut self,
-        filename: &str,
-        file_section_address: u32,
-        value: i32,
-    ) -> Result<()> {
-        self.relative_update_u32(filename, file_section_address, value as u32)
+        // Create mod files from configuration data
+        let modfiles = conf
+            .modfiles
+            .into_iter()
+            .map(|modfile| ObjectFile::new(modfile))
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            patches,
+            modfiles,
+            input_xbe,
+            output_xbe,
+        })
     }
 }
 
 #[derive(Debug)]
-pub struct ObjectFile<'a> {
+struct ObjectFile<'a> {
     filename: String,
     bytes: Vec<u8>,
     coff: Coff<'a>,
 }
 
 impl<'a> ObjectFile<'a> {
-    pub fn new(filename: String) -> Result<Self> {
-        unsafe fn extend_lifetime<'short, 'long, R>(r: &'short R) -> &'long R
-        where
-            R: ?Sized,
-        {
-            std::mem::transmute::<&'short R, &'long R>(r)
-        }
-
+    fn new(filename: String) -> Result<Self> {
         let bytes = fs::read(filename.as_str()).map_err(|e| Error::Io(filename.to_string(), e))?;
 
         // SAFETY: We are referecing data stored on the heap that will be allocated for the
         // lifetime of this object (`'a`). Therefore we can safely extend the liftime of the
         // reference to that data to the lifetime of this object
-        let coff = Coff::parse(unsafe { extend_lifetime(&*bytes) })
+        let coff = Coff::parse(unsafe { std::mem::transmute(&*bytes) })
             .map_err(|e| Error::Goblin(filename.clone(), e))?;
 
         Ok(Self {
@@ -124,7 +92,7 @@ impl<'a> ObjectFile<'a> {
 }
 
 #[derive(Debug)]
-pub struct Patch<'a> {
+struct Patch<'a> {
     patchfile: ObjectFile<'a>,
     start_symbol_name: String,
     end_symbol_name: String,
@@ -132,7 +100,7 @@ pub struct Patch<'a> {
 }
 
 impl<'a> Patch<'a> {
-    pub fn new(
+    fn new(
         filename: String,
         start_symbol_name: String,
         end_symbol_name: String,
@@ -226,6 +194,77 @@ impl<'a> Patch<'a> {
     }
 }
 
+#[derive(Debug)]
+struct SectionInProgress<'a> {
+    name: String,
+    bytes: Vec<u8>,
+    file_offset_start: HashMap<&'a str, u32>,
+    virtual_address: u32,
+}
+
+impl<'a> SectionInProgress<'a> {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            bytes: Vec::new(),
+            file_offset_start: HashMap::new(),
+            virtual_address: 0,
+        }
+    }
+
+    fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
+        self.file_offset_start
+            .insert(filename, self.bytes.len() as u32);
+        self.bytes.append(&mut bytes.to_owned());
+    }
+
+    /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
+    /// add `value`, and overwrite the original value with the result.
+    fn relative_update_u32(
+        &mut self,
+        filename: &str,
+        file_section_address: u32,
+        value: u32,
+    ) -> Result<()> {
+        let mut cur = Cursor::new(&mut self.bytes);
+
+        // rust compiler is literally stupid and we need to borrow this field now
+        // in order to capture with the closure (because the closure will borrow)
+        // the entire struct
+        let name = &self.name;
+
+        // find the offset of the data to update
+        let d_start = self.file_offset_start.get(filename).ok_or_else(|| {
+            Error::Relocation(
+                filename.to_string(),
+                error::RelocationError::MissingSectionOffset(name.clone()),
+            )
+        })? + file_section_address;
+
+        // read the current value, so we can add it to the new value
+        cur.set_position(d_start as u64);
+        let offset = cur
+            .read_u32::<LE>()
+            .map_err(|e| Error::Io(filename.to_string(), e))?;
+        cur.set_position(d_start as u64);
+
+        // update data
+        cur.write_u32::<LE>(value + offset)
+            .map_err(|e| Error::Io(filename.to_string(), e))
+    }
+
+    /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
+    /// add `value`, and overwrite the original value with the result.
+    fn relative_update_i32(
+        &mut self,
+        filename: &str,
+        file_section_address: u32,
+        value: i32,
+    ) -> Result<()> {
+        self.relative_update_u32(filename, file_section_address, value as u32)
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 struct SectionBytes<'a> {
     text: Option<&'a [u8]>,
@@ -235,7 +274,7 @@ struct SectionBytes<'a> {
 }
 
 impl<'a> SectionBytes<'a> {
-    pub fn from_obj(file: &'a ObjectFile) -> Self {
+    fn from_obj(file: &'a ObjectFile) -> Self {
         let mut s = SectionBytes::default();
 
         for sec in file
@@ -264,7 +303,7 @@ impl<'a> SectionBytes<'a> {
 struct SectionMap<'a>(HashMap<&'a str, SectionInProgress<'a>>);
 
 impl<'a> SectionMap<'a> {
-    pub fn from_data(files: &'a [ObjectFile]) -> Self {
+    fn from_data(files: &'a [ObjectFile]) -> Self {
         let mut section_map = HashMap::new();
         for file in files.iter() {
             // Extract section data from file
@@ -299,7 +338,7 @@ impl<'a> SectionMap<'a> {
         Self(section_map)
     }
 
-    pub fn get(&self, section: &str) -> Option<&SectionInProgress> {
+    fn get(&self, section: &str) -> Option<&SectionInProgress> {
         self.0.get(match section {
             ".text" => ".mtext",
             ".data" => ".mdata",
@@ -309,7 +348,7 @@ impl<'a> SectionMap<'a> {
         })
     }
 
-    pub fn get_mut(&mut self, section: &str) -> Option<&mut SectionInProgress<'a>> {
+    fn get_mut(&mut self, section: &str) -> Option<&mut SectionInProgress<'a>> {
         self.0.get_mut(match section {
             ".text" => ".mtext",
             ".data" => ".mdata",
@@ -319,7 +358,7 @@ impl<'a> SectionMap<'a> {
         })
     }
 
-    pub fn process_relocations(
+    fn process_relocations(
         &mut self,
         symbol_table: &SymbolTable,
         files: &[ObjectFile],
@@ -588,19 +627,89 @@ mod tests {
     use super::*;
 
     #[test]
+    fn config_parse() {
+        let toml = r#"
+            modfiles = ["bin/loader.o", "bin/mod.o"]
+
+            [[patch]]
+            patchfile = "bin/framehook_patch.o"
+            start_symbol = "_framehook_patch"
+            end_symbol = "_framehook_patch_end"
+            virtual_address = 396158"#;
+
+        let config =
+            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())
+                .unwrap();
+
+        // Check patch configuration
+        assert_eq!(config.patches.len(), 1);
+        let patch = &config.patches[0];
+        assert_eq!(
+            patch.patchfile.filename,
+            "bin/framehook_patch.o".to_string()
+        );
+        assert_eq!(patch.start_symbol_name, "_framehook_patch".to_string());
+        assert_eq!(patch.end_symbol_name, "_framehook_patch_end".to_string());
+        assert_eq!(patch.virtual_address, 396158);
+
+        // Check modfile list
+        assert_eq!(config.modfiles.len(), 2);
+        let modfile = &config.modfiles[0];
+        assert_eq!(modfile.filename, "bin/loader.o");
+        let modfile = &config.modfiles[1];
+        assert_eq!(modfile.filename, "bin/mod.o");
+    }
+
+    #[test]
+    fn config_parse_multi_patch() {
+        let toml = r#"
+            modfiles = []
+
+            [[patch]]
+            patchfile = "bin/framehook_patch.o"
+            start_symbol = "_framehook_patch"
+            end_symbol = "_framehook_patch_end"
+            virtual_address = 396158
+
+            [[patch]]
+            patchfile = "bin/mod.o"
+            start_symbol = "start"
+            end_symbol = "end"
+            virtual_address = 1234"#;
+
+        let config =
+            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())
+                .unwrap();
+        // Check patch configuration
+        assert_eq!(config.patches.len(), 2);
+        let patch = &config.patches[0];
+        assert_eq!(
+            patch.patchfile.filename,
+            "bin/framehook_patch.o".to_string()
+        );
+        assert_eq!(patch.start_symbol_name, "_framehook_patch".to_string());
+        assert_eq!(patch.end_symbol_name, "_framehook_patch_end".to_string());
+        assert_eq!(patch.virtual_address, 396158);
+        let patch = &config.patches[1];
+        assert_eq!(patch.patchfile.filename, "bin/mod.o".to_string());
+        assert_eq!(patch.start_symbol_name, "start".to_string());
+        assert_eq!(patch.end_symbol_name, "end".to_string());
+        assert_eq!(patch.virtual_address, 1234);
+
+        // Check modfile list
+        assert_eq!(config.modfiles.len(), 0);
+    }
+
+    #[test]
     fn no_panic() {
-        match inject(Configuration {
-            patches: vec![Patch::new(
-                "bin/framehook_patch.o".to_string(),
-                "_framehook_patch".to_string(),
-                "_framehook_patch_end".to_string(),
-                396158,
+        match inject(
+            Configuration::from_toml(
+                fs::read_to_string("bin/conf.toml").unwrap().as_str(),
+                "bin/default.xbe".to_string(),
+                "bin/output.xbe".to_string(),
             )
-            .unwrap()],
-            modfiles: vec![ObjectFile::new("bin/loader.o".to_string()).unwrap()],
-            input_xbe: "bin/default.xbe".to_string(),
-            output_xbe: "bin/output.xbe".to_string(),
-        }) {
+            .unwrap(),
+        ) {
             Ok(()) => (),
             Err(e) => panic!("bfbb_linker::inject returned error:\n\n{}\n\n", e),
         }

@@ -8,7 +8,8 @@ pub type Result<T> = result::Result<T, Error>;
 pub enum Error {
     Io(String, io::Error),
     Goblin(String, goblin::error::Error),
-    Config(ParseError),
+    Cli(CliError),
+    ConfigParse(toml::de::Error),
     Relocation(String, RelocationError),
     Patch(String, PatchError),
 }
@@ -20,7 +21,8 @@ impl std::fmt::Display for Error {
         match self {
             Error::Io(s, e) => write!(f, "I/O Error '{}'\n{}", s, e),
             Error::Goblin(s, e) => write!(f, "Problem with object file '{}'.\n{}", s, e),
-            Error::Config(e) => write!(f, "{}", e),
+            Error::Cli(e) => write!(f, "{}", e),
+            Error::ConfigParse(e) => writeln!(f, "Problem parsing config file: \n\t{}", e),
             Error::Relocation(s, e) => {
                 write!(f, "Could not process relocation in file '{}'.\n{}", s, e)
             }
@@ -29,18 +31,23 @@ impl std::fmt::Display for Error {
     }
 }
 
-#[derive(Debug)]
-pub enum ParseError {
-    HelpRequested,
-    MissingArgument(&'static str),
-    ConfigParse(toml::de::Error),
+impl From<toml::de::Error> for Error {
+    fn from(e: toml::de::Error) -> Self {
+        Self::ConfigParse(e)
+    }
 }
 
-impl error::Error for ParseError {}
-impl std::fmt::Display for ParseError {
+#[derive(Debug)]
+pub enum CliError {
+    HelpRequested,
+    MissingArgument(&'static str),
+}
+
+impl error::Error for CliError {}
+impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParseError::HelpRequested => {
+            CliError::HelpRequested => {
                 writeln!(
                     f,
                     "Usage: {} [--] OUTPUT\n",
@@ -51,15 +58,8 @@ impl std::fmt::Display for ParseError {
                 writeln!(f, "  -m, --mods    List of mods to be injected")?;
                 writeln!(f, "  -i, --input   Base XBE file to inject code into")
             }
-            ParseError::MissingArgument(s) => writeln!(f, "Missing Argument: \n\t{}", s),
-            ParseError::ConfigParse(e) => writeln!(f, "Problem parsing config file: \n\t{}", e),
+            CliError::MissingArgument(s) => writeln!(f, "Missing Argument: \n\t{}", s),
         }
-    }
-}
-
-impl From<toml::de::Error> for ParseError {
-    fn from(e: toml::de::Error) -> Self {
-        Self::ConfigParse(e)
     }
 }
 
