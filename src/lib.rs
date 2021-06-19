@@ -1,3 +1,4 @@
+#![warn(rust_2018_idioms)]
 pub mod error;
 mod xbe;
 
@@ -274,7 +275,7 @@ struct SectionBytes<'a> {
 }
 
 impl<'a> SectionBytes<'a> {
-    fn from_obj(file: &'a ObjectFile) -> Self {
+    fn from_obj(file: &'a ObjectFile<'_>) -> Self {
         let mut s = SectionBytes::default();
 
         for sec in file
@@ -303,7 +304,7 @@ impl<'a> SectionBytes<'a> {
 struct SectionMap<'a>(HashMap<&'a str, SectionInProgress<'a>>);
 
 impl<'a> SectionMap<'a> {
-    fn from_data(files: &'a [ObjectFile]) -> Self {
+    fn from_data(files: &'a [ObjectFile<'_>]) -> Self {
         let mut section_map = HashMap::new();
         for file in files.iter() {
             // Extract section data from file
@@ -338,7 +339,7 @@ impl<'a> SectionMap<'a> {
         Self(section_map)
     }
 
-    fn get(&self, section: &str) -> Option<&SectionInProgress> {
+    fn get(&self, section: &str) -> Option<&SectionInProgress<'_>> {
         self.0.get(match section {
             ".text" => ".mtext",
             ".data" => ".mdata",
@@ -361,7 +362,7 @@ impl<'a> SectionMap<'a> {
     fn process_relocations(
         &mut self,
         symbol_table: &SymbolTable,
-        files: &[ObjectFile],
+        files: &[ObjectFile<'_>],
     ) -> Result<()> {
         for file in files.iter() {
             for section in file.coff.sections.iter() {
@@ -459,9 +460,9 @@ impl SymbolTable {
 
     fn extract_symbols(
         &mut self,
-        section_map: &SectionMap,
-        obj: &ObjectFile,
-        config: &Configuration,
+        section_map: &SectionMap<'_>,
+        obj: &ObjectFile<'_>,
+        config: &Configuration<'_>,
     ) -> Result<()> {
         for (_index, _name, sym) in obj.coff.symbols.iter() {
             if sym.section_number < 1 {
@@ -561,7 +562,7 @@ impl SymbolTable {
 /// - process relocations within each file
 /// - process base game patch files
 /// - insert sections into xbe
-pub fn inject(config: Configuration) -> Result<()> {
+pub fn inject(config: Configuration<'_>) -> Result<()> {
     // combine sections
     let mut section_map = SectionMap::from_data(&config.modfiles);
 
