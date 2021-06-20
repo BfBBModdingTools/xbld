@@ -13,7 +13,6 @@ fn main() {
             process::exit(1)
         }
     };
-    println!("{:?}", &config);
 
     match bfbb_linker::inject(config) {
         Ok(_) => {}
