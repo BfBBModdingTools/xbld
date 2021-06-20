@@ -4,8 +4,8 @@ use std::{env, process};
 fn main() {
     let config = match parse_args(env::args()) {
         Ok(c) => c,
-        Err(e @ Error::Cli(_)) => {
-            eprintln!("{}", e);
+        Err(e @ Error::Cli(CliError::HelpRequested)) => {
+            println!("{}", e);
             process::exit(0)
         }
         Err(e) => {
