@@ -702,6 +702,45 @@ mod tests {
     }
 
     #[test]
+    // This test add a patch that jumps to a minimal mod that saves registers, replaces the
+    // overwritten instruction, jumps to a stub function, and then returns to the base game.
+    fn minimal_example() {
+        use sha1::{Digest, Sha1};
+
+        let toml = r#"
+            modfiles = ["bin/loader_stub.o"]
+
+            [[patch]]
+            patchfile = "bin/framehook_patch.o"
+            start_symbol = "_framehook_patch"
+            end_symbol = "_framehook_patch_end"
+            virtual_address = 396158"#;
+
+        let config = Configuration::from_toml(
+            toml,
+            "bin/default.xbe".to_string(),
+            "bin/output.xbe".to_string(),
+        )
+        .unwrap();
+
+        let _ = inject(config);
+
+        // Check that output matches expected rom
+        let target_hash = {
+            let mut sha1 = Sha1::new();
+            sha1.update(&fs::read("bin/minimal_example.xbe").unwrap());
+            sha1.finalize()
+        };
+        let actual_hash = {
+            let mut sha1 = Sha1::new();
+            sha1.update(&fs::read("bin/output.xbe").unwrap());
+            sha1.finalize()
+        };
+
+        assert_eq!(target_hash, actual_hash);
+    }
+
+    #[test]
     fn no_panic() {
         match inject(
             Configuration::from_toml(
