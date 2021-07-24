@@ -428,9 +428,9 @@ impl<'a> SectionMap<'a> {
 
                             // Calculate relative jump based on distance from the virtual address of the next instruction
                             // (AKA the value of the CPU program counter after reading this instruction) and the target
-                            const INSTRUCTION_SIZE: u32 = 5;
-                            let from_address =
-                                sec_address + section_data.virtual_address + INSTRUCTION_SIZE;
+                            let from_address = sec_address
+                                + section_data.virtual_address
+                                + std::mem::size_of::<u32>() as u32;
                             section_data.relative_update_i32(
                                 file.filename.as_str(),
                                 sec_address,
