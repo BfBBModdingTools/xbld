@@ -1,0 +1,8 @@
+modfiles = [ "test/bin/loader.o" ]
+
+[[patch]]
+patchfile = "test/bin/framehook_patch.o"
+start_symbol = "_framehook_patch"
+end_symbol = "_framehook_patch_end"
+virtual_address = 396158
+

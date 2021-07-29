@@ -639,7 +639,7 @@ mod tests {
     fn deserialize_and_reserialize() {
         use sha1::{Digest, Sha1};
 
-        let xbe = Xbe::load(&std::fs::read("bin/default.xbe").unwrap()).unwrap();
+        let xbe = Xbe::load(&std::fs::read("test/bin/default.xbe").unwrap()).unwrap();
         let bytes = xbe.serialize().unwrap();
 
         const XBE_SHA1: &'static [u8] = &[

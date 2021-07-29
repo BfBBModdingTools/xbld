@@ -455,7 +455,7 @@ mod tests {
     fn vanilla_serialization() {
         use sha1::{Digest, Sha1};
 
-        let xbe = Xbe::from_path("bin/default.xbe");
+        let xbe = Xbe::from_path("test/bin/default.xbe");
         xbe.write_to_file("bin/test.xbe");
 
         // ensure the files are the same.

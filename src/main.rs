@@ -69,9 +69,9 @@ mod tests {
         let args = vec![
             "program_name".to_string(),
             "--config".to_string(),
-            "bin/conf.toml".to_string(),
+            "test/bin/conf.toml".to_string(),
             "--input".to_string(),
-            "bin/default.xbe".to_string(),
+            "test/bin/default.xbe".to_string(),
             "bin/output.xbe".to_string(),
         ];
         let c = parse_args(args.into_iter());

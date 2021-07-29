@@ -23,6 +23,11 @@ The project is still in very early development and not yet intended for actual u
 
 - Running 'cargo build' from the project root should "just work".
 
+### Testing
+
+- Testing requires a clean executable of *SpongeBob SquarePants: Battle for Bikini Bottom* to be located at `bin/default.xbe`. Acquiring this file is up to you.
+    - sha1sum: `a9ac855c4ee8b41b661c3578c959c024f1068c47`
+
 ## Contributions
 
 - If you have suggestions about the project feel free to open an [Issue](https://www.github.com/BfBBModdingTools/bfbb_linker/issues) to start discussion. PRs will always be considered as well.

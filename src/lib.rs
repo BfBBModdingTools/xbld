@@ -630,10 +630,10 @@ mod tests {
     #[test]
     fn config_parse() {
         let toml = r#"
-            modfiles = ["bin/loader.o", "bin/mod.o"]
+            modfiles = ["test/bin/loader.o", "test/bin/mod.o"]
 
             [[patch]]
-            patchfile = "bin/framehook_patch.o"
+            patchfile = "test/bin/framehook_patch.o"
             start_symbol = "_framehook_patch"
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158"#;
@@ -647,7 +647,7 @@ mod tests {
         let patch = &config.patches[0];
         assert_eq!(
             patch.patchfile.filename,
-            "bin/framehook_patch.o".to_string()
+            "test/bin/framehook_patch.o".to_string()
         );
         assert_eq!(patch.start_symbol_name, "_framehook_patch".to_string());
         assert_eq!(patch.end_symbol_name, "_framehook_patch_end".to_string());
@@ -656,9 +656,9 @@ mod tests {
         // Check modfile list
         assert_eq!(config.modfiles.len(), 2);
         let modfile = &config.modfiles[0];
-        assert_eq!(modfile.filename, "bin/loader.o");
+        assert_eq!(modfile.filename, "test/bin/loader.o");
         let modfile = &config.modfiles[1];
-        assert_eq!(modfile.filename, "bin/mod.o");
+        assert_eq!(modfile.filename, "test/bin/mod.o");
     }
 
     #[test]
@@ -667,13 +667,13 @@ mod tests {
             modfiles = []
 
             [[patch]]
-            patchfile = "bin/framehook_patch.o"
+            patchfile = "test/bin/framehook_patch.o"
             start_symbol = "_framehook_patch"
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158
 
             [[patch]]
-            patchfile = "bin/mod.o"
+            patchfile = "test/bin/mod.o"
             start_symbol = "start"
             end_symbol = "end"
             virtual_address = 1234"#;
@@ -686,13 +686,13 @@ mod tests {
         let patch = &config.patches[0];
         assert_eq!(
             patch.patchfile.filename,
-            "bin/framehook_patch.o".to_string()
+            "test/bin/framehook_patch.o".to_string()
         );
         assert_eq!(patch.start_symbol_name, "_framehook_patch".to_string());
         assert_eq!(patch.end_symbol_name, "_framehook_patch_end".to_string());
         assert_eq!(patch.virtual_address, 396158);
         let patch = &config.patches[1];
-        assert_eq!(patch.patchfile.filename, "bin/mod.o".to_string());
+        assert_eq!(patch.patchfile.filename, "test/bin/mod.o".to_string());
         assert_eq!(patch.start_symbol_name, "start".to_string());
         assert_eq!(patch.end_symbol_name, "end".to_string());
         assert_eq!(patch.virtual_address, 1234);
@@ -708,17 +708,17 @@ mod tests {
         use sha1::{Digest, Sha1};
 
         let toml = r#"
-            modfiles = ["bin/loader_stub.o"]
+            modfiles = ["test/bin/loader_stub.o"]
 
             [[patch]]
-            patchfile = "bin/framehook_patch.o"
+            patchfile = "test/bin/framehook_patch.o"
             start_symbol = "_framehook_patch"
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158"#;
 
         let config = Configuration::from_toml(
             toml,
-            "bin/default.xbe".to_string(),
+            "test/bin/default.xbe".to_string(),
             "bin/output.xbe".to_string(),
         )
         .unwrap();
@@ -728,7 +728,7 @@ mod tests {
         // Check that output matches expected rom
         let target_hash = {
             let mut sha1 = Sha1::new();
-            sha1.update(&fs::read("bin/minimal_example.xbe").unwrap());
+            sha1.update(&fs::read("test/bin/minimal_example.xbe").unwrap());
             sha1.finalize()
         };
         let actual_hash = {
@@ -744,8 +744,8 @@ mod tests {
     fn no_panic() {
         match inject(
             Configuration::from_toml(
-                fs::read_to_string("bin/conf.toml").unwrap().as_str(),
-                "bin/default.xbe".to_string(),
+                fs::read_to_string("test/bin/conf.toml").unwrap().as_str(),
+                "test/bin/default.xbe".to_string(),
                 "bin/output.xbe".to_string(),
             )
             .unwrap(),
