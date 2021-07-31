@@ -627,8 +627,10 @@ mod tests {
 
     use super::*;
 
+    type TestError = std::result::Result<(), Box<dyn std::error::Error>>;
+
     #[test]
-    fn config_parse() {
+    fn config_parse() -> TestError {
         let toml = r#"
             modfiles = ["test/bin/loader.o", "test/bin/mod.o"]
 
@@ -639,8 +641,7 @@ mod tests {
             virtual_address = 396158"#;
 
         let config =
-            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())
-                .unwrap();
+            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())?;
 
         // Check patch configuration
         assert_eq!(config.patches.len(), 1);
@@ -659,10 +660,11 @@ mod tests {
         assert_eq!(modfile.filename, "test/bin/loader.o");
         let modfile = &config.modfiles[1];
         assert_eq!(modfile.filename, "test/bin/mod.o");
+        Ok(())
     }
 
     #[test]
-    fn config_parse_multi_patch() {
+    fn config_parse_multi_patch() -> TestError {
         let toml = r#"
             modfiles = []
 
@@ -679,8 +681,8 @@ mod tests {
             virtual_address = 1234"#;
 
         let config =
-            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())
-                .unwrap();
+            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())?;
+
         // Check patch configuration
         assert_eq!(config.patches.len(), 2);
         let patch = &config.patches[0];
@@ -699,12 +701,13 @@ mod tests {
 
         // Check modfile list
         assert_eq!(config.modfiles.len(), 0);
+        Ok(())
     }
 
     #[test]
     // This test add a patch that jumps to a minimal mod that saves registers, replaces the
     // overwritten instruction, jumps to a stub function, and then returns to the base game.
-    fn minimal_example() {
+    fn minimal_example() -> TestError {
         use sha1::{Digest, Sha1};
 
         let toml = r#"
@@ -720,39 +723,37 @@ mod tests {
             toml,
             "test/bin/default.xbe".to_string(),
             "bin/output.xbe".to_string(),
-        )
-        .unwrap();
+        )?;
 
-        let _ = inject(config);
+        inject(config)?;
 
         // Check that output matches expected rom
         let target_hash = {
             let mut sha1 = Sha1::new();
-            sha1.update(&fs::read("test/bin/minimal_example.xbe").unwrap());
+            sha1.update(&fs::read("test/bin/minimal_example.xbe")?);
             sha1.finalize()
         };
         let actual_hash = {
             let mut sha1 = Sha1::new();
-            sha1.update(&fs::read("bin/output.xbe").unwrap());
+            sha1.update(&fs::read("bin/output.xbe")?);
             sha1.finalize()
         };
 
         assert_eq!(target_hash, actual_hash);
+        Ok(())
     }
 
     #[test]
-    fn no_panic() {
-        match inject(
+    fn no_panic() -> TestError {
+        inject(
             Configuration::from_toml(
                 fs::read_to_string("test/bin/conf.toml").unwrap().as_str(),
                 "test/bin/default.xbe".to_string(),
                 "bin/output.xbe".to_string(),
             )
             .unwrap(),
-        ) {
-            Ok(()) => (),
-            Err(e) => panic!("bfbb_linker::inject returned error:\n\n{}\n\n", e),
-        }
+        )?;
+        Ok(())
     }
 
     #[test]
