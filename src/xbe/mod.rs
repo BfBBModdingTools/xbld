@@ -1,6 +1,6 @@
 mod raw;
 
-use std::{ops::Range, path::Path};
+use std::ops::Range;
 
 use bitflags::bitflags;
 use itertools::Itertools;
@@ -21,18 +21,8 @@ pub struct Xbe {
 }
 
 impl Xbe {
-    pub fn from_path<P>(path: P) -> Self
-    where
-        P: AsRef<Path>,
-    {
-        Self::from_raw(raw::Xbe::load(&std::fs::read(path).unwrap()).unwrap())
-    }
-
-    pub fn write_to_file<P>(&self, path: P)
-    where
-        P: AsRef<Path>,
-    {
-        std::fs::write(path, &self.convert_to_raw().serialize().unwrap()).unwrap();
+    pub fn new(bytes: &[u8]) -> Result<Self, std::io::Error> {
+        Ok(Self::from_raw(raw::Xbe::load(bytes)?))
     }
 
     pub fn serialize(&self) -> Result<Vec<u8>, std::io::Error> {
@@ -466,8 +456,7 @@ mod tests {
             hasher.finalize()
         };
 
-        // TODO: use a constructor that takes the byte array
-        let xbe = Xbe::from_path("test/bin/default.xbe");
+        let xbe = Xbe::new(&default_bytes)?;
         let bytes = xbe.serialize()?;
         let output_hash = {
             let mut hasher = Sha1::new();
