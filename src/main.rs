@@ -10,7 +10,7 @@ struct Cli<'a> {
     output_path: String,
 }
 
-fn main() {
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let cli = match parse_args(env::args()) {
         Ok(c) => c,
         Err(e @ Error::Cli(CliError::HelpRequested)) => {
@@ -23,12 +23,11 @@ fn main() {
         }
     };
 
-    let xbe: xbe::Xbe = bfbb_linker::inject(cli.config, xbe::Xbe::from_path(cli.input_path))
-        .unwrap_or_else(|e| {
-            eprint!("{}", e);
-            process::exit(1);
-        });
-    xbe.write_to_file(cli.output_path);
+    let xbe: xbe::Xbe =
+        bfbb_linker::inject(cli.config, xbe::Xbe::new(&std::fs::read(cli.input_path)?)?)?;
+    std::fs::write(cli.output_path, xbe.serialize()?)?;
+
+    Ok(())
 }
 
 fn parse_args<'a, I>(mut args: I) -> Result<Cli<'a>>

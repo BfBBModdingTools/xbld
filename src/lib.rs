@@ -708,7 +708,7 @@ mod tests {
             virtual_address = 396158"#;
 
         let config = Configuration::from_toml(toml)?;
-        let output = inject(config, xbe::Xbe::from_path("test/bin/default.xbe"))?;
+        let output = inject(config, xbe::Xbe::new(&fs::read("test/bin/default.xbe")?)?)?;
 
         // Check that output matches expected rom
         let target_hash = {
@@ -728,7 +728,7 @@ mod tests {
 
     #[test]
     fn no_panic() -> TestError {
-        let xbe = xbe::Xbe::from_path("test/bin/default.xbe");
+        let xbe = xbe::Xbe::new(&fs::read("test/bin/default.xbe")?)?;
         inject(
             Configuration::from_toml(fs::read_to_string("test/bin/conf.toml").unwrap().as_str())?,
             xbe,
