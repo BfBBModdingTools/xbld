@@ -1,6 +1,6 @@
 #![warn(rust_2018_idioms)]
 pub mod error;
-mod xbe;
+pub mod xbe;
 
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use error::{Error, Result};
@@ -17,12 +17,10 @@ use xbe::{SectionFlags, Xbe};
 pub struct Configuration<'a> {
     patches: Vec<Patch<'a>>,
     modfiles: Vec<ObjectFile<'a>>,
-    input_xbe: String,
-    output_xbe: String,
 }
 
 impl Configuration<'_> {
-    pub fn from_toml(conf: &str, input_xbe: String, output_xbe: String) -> Result<Self> {
+    pub fn from_toml(conf: &str) -> Result<Self> {
         // These structs define the format of the config file
         #[derive(serde::Deserialize)]
         struct ConfToml {
@@ -58,12 +56,7 @@ impl Configuration<'_> {
             .into_iter()
             .map(|modfile| ObjectFile::new(modfile))
             .collect::<Result<_>>()?;
-        Ok(Self {
-            patches,
-            modfiles,
-            input_xbe,
-            output_xbe,
-        })
+        Ok(Self { patches, modfiles })
     }
 }
 
@@ -562,12 +555,11 @@ impl SymbolTable {
 /// - process relocations within each file
 /// - process base game patch files
 /// - insert sections into xbe
-pub fn inject(config: Configuration<'_>) -> Result<()> {
+pub fn inject(config: Configuration<'_>, mut xbe: Xbe) -> Result<Xbe> {
     // combine sections
     let mut section_map = SectionMap::from_data(&config.modfiles);
 
     // Assign virtual addresses
-    let mut xbe = Xbe::from_path(config.input_xbe.as_str());
     let mut last_virtual_address = xbe.get_next_virtual_address();
 
     for (_, sec) in section_map.0.iter_mut().sorted_by(|a, b| a.0.cmp(b.0)) {
@@ -616,9 +608,7 @@ pub fn inject(config: Configuration<'_>) -> Result<()> {
             virtual_size,
         )
     }
-    xbe.write_to_file(config.output_xbe);
-
-    Ok(())
+    Ok(xbe)
 }
 
 #[cfg(test)]
@@ -640,8 +630,7 @@ mod tests {
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158"#;
 
-        let config =
-            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())?;
+        let config = Configuration::from_toml(toml)?;
 
         // Check patch configuration
         assert_eq!(config.patches.len(), 1);
@@ -680,8 +669,7 @@ mod tests {
             end_symbol = "end"
             virtual_address = 1234"#;
 
-        let config =
-            Configuration::from_toml(toml, "input.xbe".to_string(), "output.xbe".to_string())?;
+        let config = Configuration::from_toml(toml)?;
 
         // Check patch configuration
         assert_eq!(config.patches.len(), 2);
@@ -719,13 +707,8 @@ mod tests {
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158"#;
 
-        let config = Configuration::from_toml(
-            toml,
-            "test/bin/default.xbe".to_string(),
-            "bin/output.xbe".to_string(),
-        )?;
-
-        inject(config)?;
+        let config = Configuration::from_toml(toml)?;
+        let output = inject(config, xbe::Xbe::from_path("test/bin/default.xbe"))?;
 
         // Check that output matches expected rom
         let target_hash = {
@@ -733,11 +716,13 @@ mod tests {
             sha1.update(&fs::read("test/bin/minimal_example.xbe")?);
             sha1.finalize()
         };
+        output.write_to_file("bin/TestMinimalExample.xbe.tmp");
         let actual_hash = {
             let mut sha1 = Sha1::new();
-            sha1.update(&fs::read("bin/output.xbe")?);
+            sha1.update(&fs::read("bin/TestMinimalExample.xbe.tmp")?);
             sha1.finalize()
         };
+        fs::remove_file("bin/TestMinimalExample.xbe.tmp")?;
 
         assert_eq!(target_hash, actual_hash);
         Ok(())
@@ -745,13 +730,10 @@ mod tests {
 
     #[test]
     fn no_panic() -> TestError {
+        let xbe = xbe::Xbe::from_path("test/bin/default.xbe");
         inject(
-            Configuration::from_toml(
-                fs::read_to_string("test/bin/conf.toml").unwrap().as_str(),
-                "test/bin/default.xbe".to_string(),
-                "bin/output.xbe".to_string(),
-            )
-            .unwrap(),
+            Configuration::from_toml(fs::read_to_string("test/bin/conf.toml").unwrap().as_str())?,
+            xbe,
         )?;
         Ok(())
     }

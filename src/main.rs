@@ -1,8 +1,17 @@
-use bfbb_linker::error::{CliError, Error, Result};
+use bfbb_linker::{
+    error::{CliError, Error, Result},
+    xbe,
+};
 use std::{env, process};
 
+struct Cli<'a> {
+    config: bfbb_linker::Configuration<'a>,
+    input_path: String,
+    output_path: String,
+}
+
 fn main() {
-    let config = match parse_args(env::args()) {
+    let cli = match parse_args(env::args()) {
         Ok(c) => c,
         Err(e @ Error::Cli(CliError::HelpRequested)) => {
             println!("{}", e);
@@ -14,13 +23,15 @@ fn main() {
         }
     };
 
-    match bfbb_linker::inject(config) {
-        Ok(_) => {}
-        Err(e) => eprint!("{}", e),
-    }
+    let xbe: xbe::Xbe = bfbb_linker::inject(cli.config, xbe::Xbe::from_path(cli.input_path))
+        .unwrap_or_else(|e| {
+            eprint!("{}", e);
+            process::exit(1);
+        });
+    xbe.write_to_file(cli.output_path);
 }
 
-fn parse_args<'a, I>(mut args: I) -> Result<bfbb_linker::Configuration<'a>>
+fn parse_args<'a, I>(mut args: I) -> Result<Cli<'a>>
 where
     I: Iterator<Item = std::string::String>,
 {
@@ -50,14 +61,19 @@ where
     )))?;
     let config = std::fs::read_to_string(config.as_str()).map_err(|e| Error::Io(config, e))?;
 
-    let input_xbe = input_xbe.ok_or(Error::Cli(CliError::MissingArgument(
+    let input_path = input_xbe.ok_or(Error::Cli(CliError::MissingArgument(
         "Input XBE is required.",
     )))?;
-    let output_xbe = output_xbe.ok_or(Error::Cli(CliError::MissingArgument(
+    let output_path = output_xbe.ok_or(Error::Cli(CliError::MissingArgument(
         "Output XBE is required",
     )))?;
 
-    bfbb_linker::Configuration::from_toml(config.as_str(), input_xbe, output_xbe)
+    let config = bfbb_linker::Configuration::from_toml(config.as_str())?;
+    Ok(Cli {
+        config,
+        input_path,
+        output_path,
+    })
 }
 
 #[cfg(test)]
