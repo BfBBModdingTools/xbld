@@ -35,6 +35,10 @@ impl Xbe {
         std::fs::write(path, &self.convert_to_raw().serialize().unwrap()).unwrap();
     }
 
+    pub fn serialize(&self) -> Result<Vec<u8>, std::io::Error> {
+        self.convert_to_raw().serialize()
+    }
+
     pub fn get_next_virtual_address(&self) -> u32 {
         match self.sections.last() {
             None => 0,

@@ -716,13 +716,11 @@ mod tests {
             sha1.update(&fs::read("test/bin/minimal_example.xbe")?);
             sha1.finalize()
         };
-        output.write_to_file("bin/TestMinimalExample.xbe.tmp");
         let actual_hash = {
             let mut sha1 = Sha1::new();
-            sha1.update(&fs::read("bin/TestMinimalExample.xbe.tmp")?);
+            sha1.update(&output.serialize()?);
             sha1.finalize()
         };
-        fs::remove_file("bin/TestMinimalExample.xbe.tmp")?;
 
         assert_eq!(target_hash, actual_hash);
         Ok(())
