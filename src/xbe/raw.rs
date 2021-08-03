@@ -636,19 +636,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deserialize_and_reserialize() {
+    fn deserialize_and_reserialize() -> std::result::Result<(), std::io::Error> {
         use sha1::{Digest, Sha1};
 
-        let xbe = Xbe::load(&std::fs::read("test/bin/default.xbe").unwrap()).unwrap();
-        let bytes = xbe.serialize().unwrap();
+        let default_bytes = std::fs::read("test/bin/default.xbe")?;
+        let default_hash = {
+            let mut hasher = Sha1::new();
+            hasher.update(&default_bytes);
+            hasher.finalize()
+        };
 
-        const XBE_SHA1: &'static [u8] = &[
-            0xa9, 0xac, 0x85, 0x5c, 0x4e, 0xe8, 0xb4, 0x1b, 0x66, 0x1c, 0x35, 0x78, 0xc9, 0x59,
-            0xc0, 0x24, 0xf1, 0x06, 0x8c, 0x47,
-        ];
-        let mut hasher = Sha1::new();
-        hasher.update(&bytes);
-        let hash = hasher.finalize();
-        assert_eq!(*XBE_SHA1, *hash);
+        let xbe = Xbe::load(&default_bytes)?;
+        let bytes = xbe.serialize()?;
+
+        let output_hash = {
+            let mut hasher = Sha1::new();
+            hasher.update(&bytes);
+            hasher.finalize()
+        };
+        assert_eq!(*default_hash, *output_hash);
+
+        Ok(())
     }
 }
