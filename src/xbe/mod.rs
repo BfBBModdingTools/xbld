@@ -456,11 +456,11 @@ mod tests {
     #[test]
     /// Read an xbe and immediately serialize it to a new file, asserting that both files
     /// are identical
-    fn vanilla_serialization() {
+    fn vanilla_serialization() -> Result<(), std::io::Error> {
         use sha1::{Digest, Sha1};
 
         let xbe = Xbe::from_path("test/bin/default.xbe");
-        xbe.write_to_file("bin/test.xbe");
+        let bytes = xbe.serialize()?;
 
         // ensure the files are the same.
         // TODO: implement this as a function in the XBE module/crate and update chum_bucket_lab
@@ -469,13 +469,13 @@ mod tests {
             0xa9, 0xac, 0x85, 0x5c, 0x4e, 0xe8, 0xb4, 0x1b, 0x66, 0x1c, 0x35, 0x78, 0xc9, 0x59,
             0xc0, 0x24, 0xf1, 0x06, 0x8c, 0x47,
         ];
-        let mut hasher = Sha1::new();
-        hasher.update(&std::fs::read("bin/test.xbe").unwrap());
-        let hash = hasher.finalize();
-
-        //remove temporary file
-        std::fs::remove_file("bin/test.xbe").unwrap();
+        let hash = {
+            let mut hasher = Sha1::new();
+            hasher.update(&bytes);
+            hasher.finalize()
+        };
 
         assert_eq!(*XBE_SHA1, *hash);
+        Ok(())
     }
 }
