@@ -54,7 +54,7 @@ impl Configuration<'_> {
         let modfiles = conf
             .modfiles
             .into_iter()
-            .map(|modfile| ObjectFile::new(modfile))
+            .map(ObjectFile::new)
             .collect::<Result<_>>()?;
         Ok(Self { patches, modfiles })
     }
