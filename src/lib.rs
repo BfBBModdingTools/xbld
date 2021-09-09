@@ -727,6 +727,17 @@ mod tests {
     }
 
     #[test]
+    // This test provides some level of confidence that the unsafe code in the ObjectFile
+    // constructor is correct
+    fn load_object_file() -> TestError {
+        let name = "test/bin/framehook_patch.o";
+        let obj = ObjectFile::new("test/bin/framehook_patch.o".to_string())?;
+        assert_eq!(obj.filename, name);
+        assert_eq!(obj.bytes, std::fs::read(name)?);
+        Ok(())
+    }
+
+    #[test]
     fn no_panic() -> TestError {
         let xbe = xbe::Xbe::new(&fs::read("test/bin/default.xbe")?)?;
         inject(
