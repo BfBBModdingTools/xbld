@@ -428,6 +428,17 @@ pub struct Section {
     digest: Option<[u8; 0x14]>,
 }
 
+impl std::fmt::Debug for Section {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::result::Result<(), std::fmt::Error> {
+        f.debug_struct("Section")
+            .field("Name", &self.name)
+            .field("Virtual Address", &self.virtual_address)
+            .field("Virtual Size", &self.virtual_size)
+            .field("Raw Address", &self.raw_address)
+            .finish()
+    }
+}
+
 bitflags! {
     pub struct SectionFlags : u32 {
         const WRITABLE = 0x1;
