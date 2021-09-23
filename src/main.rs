@@ -10,7 +10,7 @@ struct Cli<'a> {
     output_path: String,
 }
 
-fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+fn main() {
     let cli = match parse_args(env::args()) {
         Ok(c) => c,
         Err(e @ Error::Cli(CliError::HelpRequested)) => {
@@ -23,6 +23,13 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    if let Err(e) = do_injection(cli) {
+        eprintln!("{}", e);
+        process::exit(1);
+    }
+}
+
+fn do_injection(cli: Cli) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let xbe: xbe::Xbe =
         bfbb_linker::inject(cli.config, xbe::Xbe::new(&std::fs::read(cli.input_path)?)?)?;
     std::fs::write(cli.output_path, xbe.serialize()?)?;
