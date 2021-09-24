@@ -1,0 +1,21 @@
+{
+    "configurations": {
+        "rust - lldb": {
+            "adapter": "CodeLLDB",
+            "breakpoints": {
+                "exception": {
+                    "cpp_throw": "Y",
+                    "cpp_catch": "N"
+                }
+            },
+            "configuration": {
+                "type": "lldb",
+                "request": "launch",
+                "name": "Run Cli",
+                "program": "${workspaceFolder}/target/debug/bfbb_linker",
+                "args": ["*${CmdArgs}"],
+                "sourceLanguages": ["rust"]
+            }
+        }
+    }
+}
