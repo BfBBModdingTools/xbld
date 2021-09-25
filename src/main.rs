@@ -1,11 +1,12 @@
 use bfbb_linker::{
+    config::Configuration,
     error::{CliError, Error, Result},
     xbe,
 };
 use std::{env, process};
 
 struct Cli<'a> {
-    config: bfbb_linker::Configuration<'a>,
+    config: Configuration<'a>,
     input_path: String,
     output_path: String,
 }
@@ -74,7 +75,7 @@ where
         "Output XBE is required",
     )))?;
 
-    let config = bfbb_linker::Configuration::from_toml(config.as_str())?;
+    let config = Configuration::from_toml(config.as_str())?;
     Ok(Cli {
         config,
         input_path,
