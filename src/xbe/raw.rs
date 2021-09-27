@@ -208,7 +208,7 @@ impl Xbe {
         let mut v = vec![];
 
         for n in self.section_names.iter() {
-            v.write_all(&n.as_bytes())?;
+            v.write_all(n.as_bytes())?;
         }
 
         Ok(v)
