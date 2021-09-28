@@ -13,8 +13,8 @@ impl Configuration<'_> {
         // These structs define the format of the config file
         #[derive(serde::Deserialize)]
         struct ConfToml {
-            patch: Vec<PatchToml>,
-            modfiles: Vec<String>,
+            patch: Option<Vec<PatchToml>>,
+            modfiles: Option<Vec<String>>,
         }
         #[derive(serde::Deserialize)]
         struct PatchToml {
@@ -26,8 +26,10 @@ impl Configuration<'_> {
         let conf: ConfToml = toml::from_str(conf)?;
 
         // Create patches from configuration data
+        // TODO: Warning message for empty patch list (mods will be dead code)
         let patches = conf
             .patch
+            .unwrap_or_default()
             .into_iter()
             .map(|patch| {
                 Patch::new(
@@ -42,6 +44,7 @@ impl Configuration<'_> {
         // Create mod files from configuration data
         let modfiles = conf
             .modfiles
+            .unwrap_or_default()
             .into_iter()
             .map(ObjectFile::new)
             .collect::<Result<_>>()?;
