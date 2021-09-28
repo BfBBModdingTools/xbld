@@ -8,7 +8,6 @@ pub type Result<T> = result::Result<T, Error>;
 pub enum Error {
     Io(String, io::Error),
     Goblin(String, goblin::error::Error),
-    Cli(CliError),
     ConfigParse(toml::de::Error),
     Relocation(String, RelocationError),
     Patch(String, PatchError),
@@ -21,7 +20,6 @@ impl std::fmt::Display for Error {
         match self {
             Error::Io(s, e) => write!(f, "I/O Error '{}'\n{}", s, e),
             Error::Goblin(s, e) => write!(f, "Problem with object file '{}'.\n{}", s, e),
-            Error::Cli(e) => write!(f, "{}", e),
             Error::ConfigParse(e) => writeln!(f, "Problem parsing config file: \n\t{}", e),
             Error::Relocation(s, e) => {
                 write!(f, "Could not process relocation in file '{}'.\n{}", s, e)
@@ -34,32 +32,6 @@ impl std::fmt::Display for Error {
 impl From<toml::de::Error> for Error {
     fn from(e: toml::de::Error) -> Self {
         Self::ConfigParse(e)
-    }
-}
-
-#[derive(Debug)]
-pub enum CliError {
-    HelpRequested,
-    MissingArgument(&'static str),
-}
-
-impl error::Error for CliError {}
-impl std::fmt::Display for CliError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CliError::HelpRequested => {
-                writeln!(
-                    f,
-                    "Usage: {} [--] OUTPUT\n",
-                    std::env::args().next().unwrap()
-                )?;
-                writeln!(f, "  --help        Show this help page")?;
-                writeln!(f, "  -p, --patches List of patches to be applied")?;
-                writeln!(f, "  -m, --mods    List of mods to be injected")?;
-                writeln!(f, "  -i, --input   Base XBE file to inject code into")
-            }
-            CliError::MissingArgument(s) => writeln!(f, "Missing Argument: \n\t{}", s),
-        }
     }
 }
 
