@@ -31,23 +31,26 @@ fn do_injection(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn parse_args() -> Cli {
+    const CONFIG: &'static str = "CONFIG";
+    const INPUT: &'static str = "INPUT";
+    const OUTPUT: &'static str = "OUTPUT";
     let matches = App::new("BfBB Linker")
         .version(env!("CARGO_PKG_VERSION"))
         .about("A linker for patching and injecting cutom code into an XBE binary.")
         .arg(
-            Arg::with_name("CONFIG")
+            Arg::with_name(CONFIG)
                 .help("Config file specifying code to be injected")
                 .required(true)
                 .index(1),
         )
         .arg(
-            Arg::with_name("INPUT")
+            Arg::with_name(INPUT)
                 .help("XBE Binary to inject into")
                 .required(true)
                 .index(2),
         )
         .arg(
-            Arg::with_name("OUTPUT")
+            Arg::with_name(OUTPUT)
                 .help("File path to write output to")
                 .required(true)
                 .index(3),
@@ -55,8 +58,8 @@ fn parse_args() -> Cli {
         .get_matches();
 
     Cli {
-        config: matches.value_of("CONFIG").unwrap().to_string(),
-        input_path: matches.value_of("INPUT").unwrap().to_string(),
-        output_path: matches.value_of("OUTPUT").unwrap().to_string(),
+        config: matches.value_of(CONFIG).unwrap().to_string(),
+        input_path: matches.value_of(INPUT).unwrap().to_string(),
+        output_path: matches.value_of(OUTPUT).unwrap().to_string(),
     }
 }
