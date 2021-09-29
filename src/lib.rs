@@ -8,10 +8,9 @@ pub mod xbe;
 use config::Configuration;
 use error::{Error, Result};
 use goblin::pe::Coff;
-use itertools::Itertools;
 use reloc::{SectionMap, SymbolTable};
 use std::fs;
-use xbe::{SectionFlags, Xbe};
+use xbe::Xbe;
 
 #[derive(Debug)]
 pub(crate) struct ObjectFile<'a> {
@@ -56,24 +55,10 @@ pub fn inject(config: Configuration<'_>, mut xbe: Xbe) -> Result<Xbe> {
     let mut section_map = SectionMap::from_data(&config.modfiles);
 
     // Assign virtual addresses
-    let mut last_virtual_address = xbe.get_next_virtual_address();
-
-    for (_, sec) in section_map.iter_mut().sorted_by(|a, b| a.0.cmp(b.0)) {
-        sec.virtual_address = last_virtual_address;
-        last_virtual_address =
-            xbe.get_next_virtual_address_after(last_virtual_address + sec.bytes.len() as u32);
-    }
+    section_map.assign_addresses(&xbe);
 
     // build symbol table
-    let mut symbol_table = SymbolTable::new();
-    for obj in config
-        .patches
-        .iter()
-        .map(|p| &p.patchfile)
-        .chain(config.modfiles.iter())
-    {
-        symbol_table.extract_symbols(&section_map, obj, &config)?;
-    }
+    let symbol_table = SymbolTable::new(&section_map, &config)?;
 
     // process relocations for mods
     section_map.process_relocations(&symbol_table, &config.modfiles)?;
@@ -84,25 +69,9 @@ pub fn inject(config: Configuration<'_>, mut xbe: Xbe) -> Result<Xbe> {
     }
 
     // insert sections into XBE
-    for (_, sec) in section_map
-        .into_iter()
-        .sorted_by(|a, b| a.1.virtual_address.cmp(&b.1.virtual_address))
-    {
-        let flags = SectionFlags::PRELOAD
-            | match sec.name.as_str() {
-                ".mtext" => SectionFlags::EXECUTABLE,
-                ".mdata" | ".mbss" => SectionFlags::WRITABLE,
-                _ => SectionFlags::PRELOAD, //No "zero" value
-            };
-        let virtual_size = sec.bytes.len() as u32;
-        xbe.add_section(
-            sec.name + "\0",
-            flags,
-            sec.bytes,
-            sec.virtual_address,
-            virtual_size,
-        )
-    }
+    section_map.finalize(&mut xbe);
+
+    // return patched xbe
     Ok(xbe)
 }
 

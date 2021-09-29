@@ -90,21 +90,20 @@ impl<'a> Patch<'a> {
     }
 
     fn find_symbol(&self, name: &str) -> Result<Symbol> {
-        for (_, n, s) in self.patchfile.coff.symbols.iter() {
-            let n = match n {
-                Some(n) => n,
-                None => s
-                    .name(&self.patchfile.coff.strings)
-                    .map_err(|e| Error::Goblin(self.patchfile.filename.to_string(), e))?,
-            };
-
-            if n == name {
-                return Ok(s);
-            }
-        }
-        Err(Error::Patch(
-            self.patchfile.filename.to_string(),
-            PatchError::UndefinedSymbol(name.to_string()),
-        ))
+        self.patchfile
+            .coff
+            .symbols
+            .iter()
+            .find(|(_, n, sym)| {
+                n.unwrap_or_else(|| sym.name(&self.patchfile.coff.strings).unwrap_or_default())
+                    == name
+            })
+            .map(|(_, _, sym)| sym)
+            .ok_or_else(|| {
+                Error::Patch(
+                    self.patchfile.filename.to_string(),
+                    PatchError::UndefinedSymbol(name.to_string()),
+                )
+            })
     }
 }

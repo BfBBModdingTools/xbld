@@ -1,22 +1,25 @@
 use crate::error::{Error, RelocationError, Result};
+use crate::xbe;
 use crate::Configuration;
 use crate::ObjectFile;
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use goblin::pe;
+use itertools::Itertools;
 use std::collections::hash_map::HashMap;
 use std::io::Cursor;
 use std::iter::IntoIterator;
 use std::ops::{Deref, DerefMut};
 
+// TODO: Restructure things to avoid this needing to be exposed for patch
 #[derive(Debug)]
-pub(crate) struct SectionInProgress<'a> {
-    pub(crate) name: String,
+pub(crate) struct SectionBuilder<'a> {
+    name: String,
     pub(crate) bytes: Vec<u8>,
-    pub(crate) file_offset_start: HashMap<&'a str, u32>,
+    file_offset_start: HashMap<&'a str, u32>,
     pub(crate) virtual_address: u32,
 }
 
-impl<'a> SectionInProgress<'a> {
+impl<'a> SectionBuilder<'a> {
     fn new(name: String) -> Self {
         Self {
             name,
@@ -114,10 +117,10 @@ impl<'a> SectionBytes<'a> {
 
 /// Maps from a given section name to it's section data
 #[derive(Debug)]
-pub(crate) struct SectionMap<'a>(HashMap<&'a str, SectionInProgress<'a>>);
+pub(crate) struct SectionMap<'a>(HashMap<&'a str, SectionBuilder<'a>>);
 
 impl<'a> Deref for SectionMap<'a> {
-    type Target = HashMap<&'a str, SectionInProgress<'a>>;
+    type Target = HashMap<&'a str, SectionBuilder<'a>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -131,8 +134,8 @@ impl<'a> DerefMut for SectionMap<'a> {
 }
 
 impl<'a> IntoIterator for SectionMap<'a> {
-    type Item = <HashMap<&'a str, SectionInProgress<'a>> as IntoIterator>::Item;
-    type IntoIter = <HashMap<&'a str, SectionInProgress<'a>> as IntoIterator>::IntoIter;
+    type Item = <HashMap<&'a str, SectionBuilder<'a>> as IntoIterator>::Item;
+    type IntoIter = <HashMap<&'a str, SectionBuilder<'a>> as IntoIterator>::IntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -150,32 +153,65 @@ impl<'a> SectionMap<'a> {
             if let Some(b) = section_bytes.text {
                 section_map
                     .entry(".mtext")
-                    .or_insert_with(|| SectionInProgress::new(".mtext".to_string()))
+                    .or_insert_with(|| SectionBuilder::new(".mtext".to_string()))
                     .add_bytes(b, file.filename.as_str());
             }
             if let Some(b) = section_bytes.data {
                 section_map
                     .entry(".mdata")
-                    .or_insert_with(|| SectionInProgress::new(".mdata".to_string()))
+                    .or_insert_with(|| SectionBuilder::new(".mdata".to_string()))
                     .add_bytes(b, file.filename.as_str());
             }
             if let Some(b) = section_bytes.bss {
                 section_map
                     .entry(".mbss")
-                    .or_insert_with(|| SectionInProgress::new(".mbss".to_string()))
+                    .or_insert_with(|| SectionBuilder::new(".mbss".to_string()))
                     .add_bytes(b, file.filename.as_str());
             }
             if let Some(b) = section_bytes.rdata {
                 section_map
                     .entry(".mrdata")
-                    .or_insert_with(|| SectionInProgress::new(".mrdata".to_string()))
+                    .or_insert_with(|| SectionBuilder::new(".mrdata".to_string()))
                     .add_bytes(b, file.filename.as_str());
             }
         }
         Self(section_map)
     }
 
-    pub(crate) fn get(&self, section: &str) -> Option<&SectionInProgress<'_>> {
+    pub(crate) fn assign_addresses(&mut self, xbe: &xbe::Xbe) {
+        let mut last_virtual_address = xbe.get_next_virtual_address();
+
+        for (_, sec) in self.iter_mut().sorted_by(|a, b| a.0.cmp(b.0)) {
+            sec.virtual_address = last_virtual_address;
+            last_virtual_address =
+                xbe.get_next_virtual_address_after(last_virtual_address + sec.bytes.len() as u32);
+        }
+    }
+
+    pub(crate) fn finalize(self, xbe: &mut xbe::Xbe) {
+        for sec in self
+            .into_iter()
+            .map(|(_, sec)| sec)
+            .sorted_by(|a, b| a.virtual_address.cmp(&b.virtual_address))
+        {
+            let flags = xbe::SectionFlags::PRELOAD
+                | match sec.name.as_str() {
+                    ".mtext" => xbe::SectionFlags::EXECUTABLE,
+                    ".mdata" | ".mbss" => xbe::SectionFlags::WRITABLE,
+                    _ => xbe::SectionFlags::PRELOAD, //No "zero" value
+                };
+            let virtual_size = sec.bytes.len() as u32;
+            xbe.add_section(
+                sec.name + "\0",
+                flags,
+                sec.bytes,
+                sec.virtual_address,
+                virtual_size,
+            )
+        }
+    }
+
+    pub(crate) fn get(&self, section: &str) -> Option<&SectionBuilder<'_>> {
         self.0.get(match section {
             ".text" => ".mtext",
             ".data" => ".mdata",
@@ -185,7 +221,7 @@ impl<'a> SectionMap<'a> {
         })
     }
 
-    pub(crate) fn get_mut(&mut self, section: &str) -> Option<&mut SectionInProgress<'a>> {
+    pub(crate) fn get_mut(&mut self, section: &str) -> Option<&mut SectionBuilder<'a>> {
         self.0.get_mut(match section {
             ".text" => ".mtext",
             ".data" => ".mdata",
@@ -290,11 +326,20 @@ impl<'a> SectionMap<'a> {
 pub(crate) struct SymbolTable(HashMap<String, u32>);
 
 impl SymbolTable {
-    pub(crate) fn new() -> Self {
-        Self(HashMap::new())
+    pub(crate) fn new(section_map: &SectionMap<'_>, config: &Configuration<'_>) -> Result<Self> {
+        let mut map = Self(HashMap::new());
+        for obj in config
+            .patches
+            .iter()
+            .map(|p| &p.patchfile)
+            .chain(config.modfiles.iter())
+        {
+            map.extract_symbols(section_map, obj, config)?;
+        }
+        Ok(map)
     }
 
-    pub(crate) fn extract_symbols(
+    fn extract_symbols(
         &mut self,
         section_map: &SectionMap<'_>,
         obj: &ObjectFile<'_>,
@@ -406,7 +451,7 @@ mod tests {
 
     #[test]
     fn file_offsets() {
-        let mut section = SectionInProgress::new("test".to_string());
+        let mut section = SectionBuilder::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
@@ -417,7 +462,7 @@ mod tests {
 
     #[test]
     fn add_bytes() {
-        let mut section = SectionInProgress::new("test".to_string());
+        let mut section = SectionBuilder::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
@@ -427,7 +472,7 @@ mod tests {
 
     #[test]
     fn relative_update() {
-        let mut section = SectionInProgress::new("test".to_string());
+        let mut section = SectionBuilder::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
         section.add_bytes(&(0..8).collect_vec(), "bytesB");
 
