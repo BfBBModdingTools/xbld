@@ -7,8 +7,10 @@ use goblin::pe;
 use itertools::Itertools;
 use std::collections::hash_map::HashMap;
 use std::io::Cursor;
-use std::iter::IntoIterator;
-use std::ops::{Deref, DerefMut};
+use std::{
+    iter::IntoIterator,
+    ops::{Deref, DerefMut},
+};
 
 // TODO: Restructure things to avoid this needing to be exposed for patch
 #[derive(Debug)]

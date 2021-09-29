@@ -1,8 +1,8 @@
-use crate::error::{Error, PatchError, Result};
-use crate::reloc::SymbolTable;
-use crate::ObjectFile;
-use crate::SectionMap;
-use crate::Xbe;
+use crate::{
+    error::{Error, PatchError, Result},
+    reloc::SymbolTable,
+    ObjectFile, SectionMap, Xbe,
+};
 use goblin::pe::symbol::Symbol;
 use std::io::{Cursor, Write};
 

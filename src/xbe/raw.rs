@@ -1,10 +1,9 @@
+use byteorder::{ReadBytesExt, WriteBytesExt, LE};
+use itertools::Itertools;
 use std::{
     io,
     io::{Cursor, Read, Result, Write},
 };
-
-use byteorder::{ReadBytesExt, WriteBytesExt, LE};
-use itertools::Itertools;
 
 /// adds padding to a byte vector until its len is a multiple of `to`
 /// no padding is added if the len is already a multiple of `to`

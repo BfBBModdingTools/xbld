@@ -1,6 +1,4 @@
-use crate::error::Result;
-use crate::patch::Patch;
-use crate::ObjectFile;
+use crate::{error::Result, patch::Patch, ObjectFile};
 
 #[derive(Debug)]
 pub struct Configuration<'a> {

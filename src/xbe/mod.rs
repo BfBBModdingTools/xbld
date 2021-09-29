@@ -1,9 +1,8 @@
 mod raw;
 
-use std::ops::Range;
-
 use bitflags::bitflags;
 use itertools::Itertools;
+use std::ops::Range;
 
 macro_rules! round_to_next {
     ($num:expr, $round_to:expr) => {{
