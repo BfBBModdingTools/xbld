@@ -1,6 +1,7 @@
 use bfbb_linker::{config::Configuration, error::Error, xbe};
 use clap::{App, Arg};
 use std::{env, process};
+use const_format::formatcp;
 
 struct Cli {
     config: String,
@@ -31,30 +32,24 @@ fn do_injection(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn parse_args() -> Cli {
-    const CONFIG: &'static str = "CONFIG";
-    const INPUT: &'static str = "INPUT";
-    const OUTPUT: &'static str = "OUTPUT";
+    const CONFIG: &str = "CONFIG";
+    const INPUT: &str = "INPUT";
+    const OUTPUT: &str = "OUTPUT";
     let matches = App::new("BfBB Linker")
         .version(env!("CARGO_PKG_VERSION"))
         .about("A linker for patching and injecting cutom code into an XBE binary.")
-        .arg(
-            Arg::with_name(CONFIG)
-                .help("Config file specifying code to be injected")
-                .required(true)
-                .index(1),
-        )
-        .arg(
-            Arg::with_name(INPUT)
-                .help("XBE Binary to inject into")
-                .required(true)
-                .index(2),
-        )
-        .arg(
-            Arg::with_name(OUTPUT)
-                .help("File path to write output to")
-                .required(true)
-                .index(3),
-        )
+        .arg(Arg::from_usage(formatcp!(
+            "<{}> 'Config file specifying code to be injected",
+            CONFIG
+        )))
+        .arg(Arg::from_usage(formatcp!(
+            "<{}> 'XBE Binary to inject into'",
+            INPUT
+        )))
+        .arg(Arg::from_usage(formatcp!(
+            "<{}> 'File path to write output to'",
+            OUTPUT
+        )))
         .get_matches();
 
     Cli {
