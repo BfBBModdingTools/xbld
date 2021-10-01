@@ -442,16 +442,6 @@ mod tests {
     type TestError = std::result::Result<(), Box<dyn std::error::Error>>;
 
     #[test]
-    fn no_panic() -> TestError {
-        let xbe = Xbe::new(&fs::read("test/bin/default.xbe")?)?;
-        crate::inject(
-            Configuration::from_toml(fs::read_to_string("test/bin/conf.toml").unwrap().as_str())?,
-            xbe,
-        )?;
-        Ok(())
-    }
-
-    #[test]
     fn file_offsets() {
         let mut section = SectionBuilder::new("test".to_string());
         section.add_bytes(&(0..12).collect_vec(), "bytesA");
