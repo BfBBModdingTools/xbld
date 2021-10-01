@@ -9,6 +9,8 @@ edition = "2018"
 [dependencies]
 clap = "2.33.3"
 const_format = "0.2.21"
+anyhow = "1.0.44"
+thiserror = "1.0.29"
 goblin = "0.4.0"
 bitflags="1.2.1"
 byteorder = "1"

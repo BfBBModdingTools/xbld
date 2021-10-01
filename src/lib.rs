@@ -1,12 +1,11 @@
 #![warn(rust_2018_idioms)]
 pub mod config;
-pub mod error;
 pub(crate) mod patch;
 pub(crate) mod reloc;
 pub mod xbe;
 
+use anyhow::{Context, Result};
 use config::Configuration;
-use error::{Error, Result};
 use goblin::pe::Coff;
 use reloc::{SectionMap, SymbolTable};
 use std::fs;
@@ -21,13 +20,14 @@ pub(crate) struct ObjectFile<'a> {
 
 impl<'a> ObjectFile<'a> {
     pub(crate) fn new(filename: String) -> Result<Self> {
-        let bytes = fs::read(filename.as_str()).map_err(|e| Error::Io(filename.to_string(), e))?;
+        let bytes = fs::read(filename.as_str())
+            .with_context(|| format!("Failed to read object file '{}'", filename.clone()))?;
 
         // SAFETY: We are referecing data stored on the heap that will be allocated for the
         // lifetime of this object (`'a`). Therefore we can safely extend the liftime of the
         // reference to that data to the lifetime of this object
         let coff = Coff::parse(unsafe { std::mem::transmute(&*bytes) })
-            .map_err(|e| Error::Goblin(filename.clone(), e))?;
+            .with_context(|| format!("Failed to parse object file '{}'", filename.clone()))?;
 
         Ok(Self {
             filename,
@@ -65,7 +65,12 @@ pub fn inject(config: Configuration<'_>, mut xbe: Xbe) -> Result<Xbe> {
 
     // apply patches
     for patch in config.patches.iter() {
-        patch.apply(&mut xbe, &symbol_table)?;
+        patch.apply(&mut xbe, &symbol_table).with_context(|| {
+            format!(
+                "Failed to apply patch '{}'",
+                patch.start_symbol_name.clone()
+            )
+        })?;
     }
 
     // insert sections into XBE

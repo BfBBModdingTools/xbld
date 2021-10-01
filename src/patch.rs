@@ -1,10 +1,20 @@
-use crate::{
-    error::{Error, PatchError, Result},
-    reloc::SymbolTable,
-    ObjectFile, SectionMap, Xbe,
-};
+use crate::{reloc::SymbolTable, ObjectFile, SectionMap, Xbe};
+use anyhow::{bail, Result};
 use goblin::pe::symbol::Symbol;
 use std::io::{Cursor, Write};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum PatchError {
+    #[error("Symbol '{0}' undefined.")]
+    UndefinedSymbol(String),
+    #[error("Section Mismatch: Start/End symbol sections differ")]
+    SectionMismatch(),
+    #[error("Could not locate section '{0}'")]
+    MissingSection(String),
+    #[error("Virtual address {0} is unused by input XBE")]
+    InvalidAddress(u32),
+}
 
 #[derive(Debug)]
 pub(crate) struct Patch<'a> {
@@ -35,10 +45,7 @@ impl<'a> Patch<'a> {
         let start_symbol = self.find_symbol(self.start_symbol_name.as_str())?;
         let end_symbol = self.find_symbol(self.end_symbol_name.as_str())?;
         if start_symbol.section_number != end_symbol.section_number {
-            return Err(Error::Patch(
-                self.start_symbol_name.to_string(),
-                PatchError::SectionMismatch(),
-            ));
+            bail!(PatchError::SectionMismatch(),);
         }
 
         let sec_name = self
@@ -47,40 +54,24 @@ impl<'a> Patch<'a> {
             .sections
             .get(start_symbol.section_number as usize - 1)
             .unwrap()
-            .name()
-            .map_err(|e| Error::Goblin(self.patchfile.filename.to_string(), e))?;
+            .name()?;
 
         // Process Patch Coff (symbols have already been read)
         let mut section_map = SectionMap::from_data(std::slice::from_ref(&self.patchfile));
         section_map
             .get_mut(sec_name)
-            .ok_or_else(|| {
-                Error::Patch(
-                    self.start_symbol_name.to_string(),
-                    PatchError::MissingSection(sec_name.to_string()),
-                )
-            })?
+            .ok_or_else(|| PatchError::MissingSection(sec_name.to_string()))?
             .virtual_address = self.virtual_address;
 
         section_map.process_relocations(symbol_table, std::slice::from_ref(&self.patchfile))?;
 
         let xbe_bytes = xbe
             .get_bytes_mut(self.virtual_address..self.virtual_address + 5)
-            .ok_or_else(|| {
-                Error::Patch(
-                    self.start_symbol_name.to_string(),
-                    PatchError::InvalidAddress(self.virtual_address),
-                )
-            })?;
+            .ok_or(PatchError::InvalidAddress(self.virtual_address))?;
 
         let patch_bytes = &section_map
             .get(sec_name)
-            .ok_or_else(|| {
-                Error::Patch(
-                    self.start_symbol_name.to_string(),
-                    PatchError::MissingSection(sec_name.to_string()),
-                )
-            })?
+            .ok_or_else(|| PatchError::MissingSection(sec_name.to_string()))?
             .bytes[start_symbol.value as usize..end_symbol.value as usize];
 
         let mut c = Cursor::new(xbe_bytes);
@@ -90,7 +81,8 @@ impl<'a> Patch<'a> {
     }
 
     fn find_symbol(&self, name: &str) -> Result<Symbol> {
-        self.patchfile
+        let sym = self
+            .patchfile
             .coff
             .symbols
             .iter()
@@ -99,11 +91,7 @@ impl<'a> Patch<'a> {
                     == name
             })
             .map(|(_, _, sym)| sym)
-            .ok_or_else(|| {
-                Error::Patch(
-                    self.patchfile.filename.to_string(),
-                    PatchError::UndefinedSymbol(name.to_string()),
-                )
-            })
+            .ok_or_else(|| PatchError::UndefinedSymbol(name.to_string()))?;
+        Ok(sym)
     }
 }

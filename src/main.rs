@@ -1,6 +1,6 @@
-use bfbb_linker::{config::Configuration, error::Error, xbe};
+use anyhow::{Context, Result};
+use bfbb_linker::{config::Configuration, xbe};
 use clap::{App, Arg};
-use std::{env, process};
 use const_format::formatcp;
 
 struct Cli {
@@ -9,21 +9,19 @@ struct Cli {
     output_path: String,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let cli = parse_args();
 
-    if let Err(e) = do_injection(&cli) {
-        eprintln!("{}", e);
-        process::exit(1);
-    }
+    do_injection(&cli)
 }
 
-fn do_injection(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn do_injection(cli: &Cli) -> Result<()> {
     let config = Configuration::from_toml(
         std::fs::read_to_string(&cli.config)
-            .map_err(|e| Error::Io(cli.config.clone(), e))?
+            .with_context(|| format!("Failed to read file '{}'", cli.config.clone()))?
             .as_str(),
-    )?;
+    )
+    .context(format!("Failed to parse config file '{}'", &cli.config))?;
     let xbe: xbe::Xbe =
         bfbb_linker::inject(config, xbe::Xbe::new(&std::fs::read(&cli.input_path)?)?)?;
     std::fs::write(&cli.output_path, xbe.serialize()?)?;

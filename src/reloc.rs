@@ -1,16 +1,27 @@
-use crate::error::{Error, RelocationError, Result};
-use crate::xbe;
-use crate::Configuration;
-use crate::ObjectFile;
+use crate::{xbe, Configuration, ObjectFile};
+use anyhow::{bail, Context, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use goblin::pe;
 use itertools::Itertools;
-use std::collections::hash_map::HashMap;
-use std::io::Cursor;
 use std::{
+    collections::HashMap,
+    io::Cursor,
     iter::IntoIterator,
     ops::{Deref, DerefMut},
 };
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum RelocationError {
+    #[error("Section {0} could not be found.")]
+    SectionLocation(String),
+    #[error("Could not find section offset for section '{0}'")]
+    SectionOffset(String),
+    #[error("Could not find symbol with index '{0}'")]
+    SymbolIndex(u32),
+    #[error("Could not find the virtual address of symbol '{0}'.")]
+    SymbolAddress(String),
+}
 
 // TODO: Restructure things to avoid this needing to be exposed for patch
 #[derive(Debug)]
@@ -53,23 +64,20 @@ impl<'a> SectionBuilder<'a> {
         let name = &self.name;
 
         // find the offset of the data to update
-        let d_start = self.file_offset_start.get(filename).ok_or_else(|| {
-            Error::Relocation(
-                filename.to_string(),
-                RelocationError::MissingSectionOffset(name.clone()),
-            )
-        })? + file_section_address;
+        let d_start = self
+            .file_offset_start
+            .get(filename)
+            .ok_or_else(|| RelocationError::SectionOffset(name.clone()))?
+            + file_section_address;
 
         // read the current value, so we can add it to the new value
         cur.set_position(d_start as u64);
-        let offset = cur
-            .read_u32::<LE>()
-            .map_err(|e| Error::Io(filename.to_string(), e))?;
+        let offset = cur.read_u32::<LE>()?;
         cur.set_position(d_start as u64);
 
         // update data
-        cur.write_u32::<LE>(value + offset)
-            .map_err(|e| Error::Io(filename.to_string(), e))
+        cur.write_u32::<LE>(value + offset)?;
+        Ok(())
     }
 
     /// Read the value located at `file_section_address` (plus the `file_start_offset` of `filename`),
@@ -243,15 +251,9 @@ impl<'a> SectionMap<'a> {
                 for reloc in section.relocations(&file.bytes).unwrap_or_default() {
                     // find data to update
                     // TODO: This is assuming 32 bit relocations
-                    // TODO: handle section_number -2,-1 and 0
-                    let section_name = section
-                        .name()
-                        .map_err(|e| Error::Goblin(file.filename.to_string(), e))?;
+                    let section_name = section.name()?;
                     let section_data = self.get_mut(section_name).ok_or_else(|| {
-                        Error::Relocation(
-                            file.filename.to_string(),
-                            RelocationError::MissingSection(section_name.to_string()),
-                        )
+                        RelocationError::SectionLocation(section_name.to_string())
                     })?;
 
                     // Find target symbol and name
@@ -259,29 +261,15 @@ impl<'a> SectionMap<'a> {
                         .coff
                         .symbols
                         .get(reloc.symbol_table_index as usize)
-                        .ok_or_else(|| {
-                            Error::Relocation(
-                                file.filename.to_string(),
-                                RelocationError::MissingSymbol(reloc.symbol_table_index),
-                            )
-                        })?;
-                    let symbol_name = match symbol_name {
-                        Some(n) => n,
-                        None => symbol.name(&file.coff.strings).map_err(|e| {
-                            Error::Relocation(
-                                file.filename.to_string(),
-                                RelocationError::MissingName(e),
-                            )
-                        })?,
-                    };
+                        .ok_or(RelocationError::SymbolIndex(reloc.symbol_table_index))?;
+                    let symbol_name =
+                        symbol_name.map_or_else(|| symbol.name(&file.coff.strings), |s| Ok(s))?;
 
                     // Find virtual address of symbol
-                    let target_address = *symbol_table.0.get(symbol_name).ok_or_else(|| {
-                        Error::Relocation(
-                            file.filename.to_string(),
-                            RelocationError::MissingAddress(symbol_name.to_string()),
-                        )
-                    })?;
+                    let target_address = *symbol_table
+                        .0
+                        .get(symbol_name)
+                        .ok_or_else(|| RelocationError::SymbolAddress(symbol_name.to_string()))?;
 
                     // We are targeting Xbox so we use x86 relocations
                     match reloc.typ {
@@ -328,7 +316,10 @@ impl<'a> SectionMap<'a> {
 pub(crate) struct SymbolTable(HashMap<String, u32>);
 
 impl SymbolTable {
-    pub(crate) fn new(section_map: &SectionMap<'_>, config: &Configuration<'_>) -> Result<Self> {
+    pub(crate) fn new(
+        section_map: &SectionMap<'_>,
+        config: &Configuration<'_>,
+    ) -> anyhow::Result<Self> {
         let mut map = Self(HashMap::new());
         for obj in config
             .patches
@@ -336,7 +327,13 @@ impl SymbolTable {
             .map(|p| &p.patchfile)
             .chain(config.modfiles.iter())
         {
-            map.extract_symbols(section_map, obj, config)?;
+            map.extract_symbols(section_map, obj, config)
+                .with_context(|| {
+                    format!(
+                        "Couldn't extract symbols from file '{}'",
+                        obj.filename.clone()
+                    )
+                })?;
         }
         Ok(map)
     }
@@ -347,9 +344,30 @@ impl SymbolTable {
         obj: &ObjectFile<'_>,
         config: &Configuration<'_>,
     ) -> Result<()> {
-        for (_index, _name, sym) in obj.coff.symbols.iter() {
-            if sym.section_number < 1 {
-                continue;
+        for (_, _, sym) in obj.coff.symbols.iter() {
+            // TODO: set a verbosity level for these messages when logging is implemented.
+            match sym.section_number {
+                0 => {
+                    // TODO: Probably track these external symbols and produce error/warnings if
+                    // unresolved
+                    println!(
+                        "Skipping external symbol '{}' in file '{}'.",
+                        sym.name(&obj.coff.strings).unwrap_or(""),
+                        obj.filename
+                    );
+                    continue;
+                }
+                -2 | -1 => {
+                    // TODO: Determine if these symbols are important at all
+                    println!(
+                        "WARNING: Skipping symbol '{}' in file '{}' with section number {}.",
+                        sym.name(&obj.coff.strings).unwrap_or(""),
+                        obj.filename,
+                        sym.section_number
+                    );
+                    continue;
+                }
+                _ => (),
             }
 
             // Get section data from table
@@ -363,8 +381,7 @@ impl SymbolTable {
                             sym.section_number, obj.filename
                         )
                     })
-                    .name()
-                    .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?,
+                    .name()?,
             ) {
                 Some(data) => data,
                 None => continue,
@@ -372,9 +389,7 @@ impl SymbolTable {
 
             match sym.storage_class {
                 pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.typ == 0x20 => {
-                    let sym_name = sym
-                        .name(&obj.coff.strings)
-                        .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?;
+                    let sym_name = sym.name(&obj.coff.strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
                         match sec_data.file_offset_start.get(obj.filename.as_str()) {
@@ -395,9 +410,7 @@ impl SymbolTable {
                 }
                 pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.section_number > 0 => {
                     self.0.insert(
-                        sym.name(&obj.coff.strings)
-                            .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?
-                            .to_owned(),
+                        sym.name(&obj.coff.strings)?.to_owned(),
                         match sec_data.file_offset_start.get(obj.filename.as_str()) {
                             Some(addr) => *addr + sym.value + sec_data.virtual_address,
                             None => continue,
@@ -414,9 +427,7 @@ impl SymbolTable {
                 }
                 pe::symbol::IMAGE_SYM_CLASS_STATIC => {
                     self.0.insert(
-                        sym.name(&obj.coff.strings)
-                            .map_err(|e| Error::Goblin(obj.filename.to_string(), e))?
-                            .to_owned(),
+                        sym.name(&obj.coff.strings)?.to_owned(),
                         match sec_data.file_offset_start.get(obj.filename.as_str()) {
                             Some(addr) => *addr + sec_data.virtual_address,
                             None => continue,
@@ -424,7 +435,7 @@ impl SymbolTable {
                     );
                 }
                 pe::symbol::IMAGE_SYM_CLASS_FILE => continue,
-                _ => todo!("storage_class {} not implemented", sym.storage_class),
+                _ => bail!("storage_class {} not implemented", sym.storage_class),
             }
         }
 
@@ -435,11 +446,7 @@ impl SymbolTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xbe::Xbe;
     use itertools::Itertools;
-    use std::fs;
-
-    type TestError = std::result::Result<(), Box<dyn std::error::Error>>;
 
     #[test]
     fn file_offsets() {
