@@ -13,8 +13,6 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RelocationError {
-    #[error("Section {0} could not be found.")]
-    SectionLocation(String),
     #[error("Could not find section offset for section '{0}'")]
     SectionOffset(String),
     #[error("Could not find symbol with index '{0}'")]
@@ -248,14 +246,19 @@ impl<'a> SectionMap<'a> {
     ) -> Result<()> {
         for file in files.iter() {
             for section in file.coff.sections.iter() {
-                for reloc in section.relocations(&file.bytes).unwrap_or_default() {
-                    // find data to update
-                    // TODO: This is assuming 32 bit relocations
-                    let section_name = section.name()?;
-                    let section_data = self.get_mut(section_name).ok_or_else(|| {
-                        RelocationError::SectionLocation(section_name.to_string())
-                    })?;
+                // find data to update
+                // TODO: This is assuming 32 bit relocations
+                let section_name = section.name()?;
+                let section_data = match self.get_mut(section_name) {
+                    Some(data) => data,
+                    None => {
+                        //TODO: Logging
+                        println!("WARNING: Skipping section '{}'", section_name);
+                        continue;
+                    }
+                };
 
+                for reloc in section.relocations(&file.bytes).unwrap_or_default() {
                     // Find target symbol and name
                     let (symbol_name, symbol) = file
                         .coff
@@ -389,6 +392,26 @@ impl SymbolTable {
 
             match sym.storage_class {
                 pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.typ == 0x20 => {
+                    let sym_name = sym.name(&obj.coff.strings)?;
+                    self.0.insert(
+                        sym_name.to_owned(),
+                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
+                            Some(addr) => *addr + sym.value + sec_data.virtual_address,
+                            None => {
+                                if let Some(patch) = config
+                                    .patches
+                                    .iter()
+                                    .find(|p| p.start_symbol_name == sym_name)
+                                {
+                                    patch.virtual_address
+                                } else {
+                                    continue;
+                                }
+                            }
+                        },
+                    );
+                }
+                pe::symbol::IMAGE_SYM_CLASS_FUNCTION => {
                     let sym_name = sym.name(&obj.coff.strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
