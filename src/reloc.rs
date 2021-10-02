@@ -40,7 +40,16 @@ impl<'a> SectionBuilder<'a> {
         }
     }
 
+    /// #Panics
+    ///
+    /// Panics if the provided filename has already been added once.
     fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
+        if self.file_offset_start.contains_key(filename) {
+            panic!(
+                "Attempted to add bytes from file '{}' to section '{}' more than once",
+                filename, self.name
+            );
+        }
         self.file_offset_start
             .insert(filename, self.bytes.len() as u32);
         self.bytes.append(&mut bytes.to_owned());
@@ -87,39 +96,6 @@ impl<'a> SectionBuilder<'a> {
         value: i32,
     ) -> Result<()> {
         self.relative_update_u32(filename, file_section_address, value as u32)
-    }
-}
-
-#[derive(Default, Debug, Clone)]
-struct SectionBytes<'a> {
-    text: Option<&'a [u8]>,
-    data: Option<&'a [u8]>,
-    bss: Option<&'a [u8]>,
-    rdata: Option<&'a [u8]>,
-}
-
-impl<'a> SectionBytes<'a> {
-    fn from_obj(file: &'a ObjectFile<'_>) -> Self {
-        let mut s = SectionBytes::default();
-
-        for sec in file
-            .coff
-            .sections
-            .iter()
-            .filter(|s| s.size_of_raw_data != 0)
-        {
-            let start = sec.pointer_to_raw_data as usize;
-            let end = start + sec.size_of_raw_data as usize;
-            let data = &file.bytes[start..end];
-            match &sec.name {
-                b".text\0\0\0" => s.text = Some(data),
-                b".data\0\0\0" => s.data = Some(data),
-                b".bss\0\0\0\0" => s.bss = Some(data),
-                b".rdata\0\0" => s.rdata = Some(data),
-                _ => continue,
-            }
-        }
-        s
     }
 }
 
@@ -225,35 +201,47 @@ impl<'a> SectionMap<'a> {
     pub(crate) fn from_data(files: &'a [ObjectFile<'_>]) -> Self {
         let mut section_map = HashMap::new();
         for file in files.iter() {
-            // Extract section data from file
-            let section_bytes = SectionBytes::from_obj(file);
+            let mut combined_bytes = HashMap::new();
+            for sec in file
+                .coff
+                .sections
+                .iter()
+                .filter(|s| s.size_of_raw_data != 0)
+            {
+                let sec_name = match &sec.name {
+                    b".text\0\0\0" => ".mtext",
+                    b".data\0\0\0" => ".mdata",
+                    b".bss\0\0\0\0" => ".mbss",
+                    b".rdata\0\0" => ".mrdata",
+                    _ => continue,
+                };
 
-            // Combine sections from all files
-            if let Some(b) = section_bytes.text {
-                section_map
-                    .entry(".mtext")
-                    .or_insert_with(|| SectionBuilder::new(".mtext".to_string()))
-                    .add_bytes(b, file.filename.as_str());
+                let start = sec.pointer_to_raw_data as usize;
+                let end = start + sec.size_of_raw_data as usize;
+                let data = &file.bytes[start..end];
+
+                combined_bytes
+                    .entry(sec_name)
+                    .or_insert_with(Vec::default)
+                    .append(&mut data.to_owned());
             }
-            if let Some(b) = section_bytes.data {
+
+            for (sec_name, bytes) in combined_bytes.into_iter() {
+                // TODO: Logging
+                println!(
+                    "Adding section '{}' from file '{}'; {} bytes.",
+                    sec_name,
+                    file.filename,
+                    bytes.len()
+                );
+
                 section_map
-                    .entry(".mdata")
-                    .or_insert_with(|| SectionBuilder::new(".mdata".to_string()))
-                    .add_bytes(b, file.filename.as_str());
-            }
-            if let Some(b) = section_bytes.bss {
-                section_map
-                    .entry(".mbss")
-                    .or_insert_with(|| SectionBuilder::new(".mbss".to_string()))
-                    .add_bytes(b, file.filename.as_str());
-            }
-            if let Some(b) = section_bytes.rdata {
-                section_map
-                    .entry(".mrdata")
-                    .or_insert_with(|| SectionBuilder::new(".mrdata".to_string()))
-                    .add_bytes(b, file.filename.as_str());
+                    .entry(sec_name)
+                    .or_insert_with(|| SectionBuilder::new(sec_name.to_string()))
+                    .add_bytes(&bytes, &file.filename);
             }
         }
+
         Self(section_map)
     }
 
@@ -328,6 +316,11 @@ impl<'a> SectionMap<'a> {
                         continue;
                     }
                 };
+
+                println!(
+                    "Beginning relocation processing for section '{}'",
+                    section_name
+                );
 
                 for reloc in section.relocations(&file.bytes).unwrap_or_default() {
                     reloc
