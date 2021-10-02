@@ -83,7 +83,7 @@ impl<'a> SectionBuilder<'a> {
         cur.set_position(d_start as u64);
 
         // update data
-        cur.write_u32::<LE>(value + offset)?;
+        cur.write_u32::<LE>(value.wrapping_add(offset))?;
         Ok(())
     }
 
