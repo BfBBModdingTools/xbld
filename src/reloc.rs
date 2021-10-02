@@ -123,6 +123,77 @@ impl<'a> SectionBytes<'a> {
     }
 }
 
+trait RelocExt {
+    fn perform(
+        &self,
+        file: &ObjectFile<'_>,
+        symbol_table: &SymbolTable,
+        section_data: &mut SectionBuilder<'_>,
+    ) -> Result<()>;
+}
+
+impl RelocExt for pe::relocation::Relocation {
+    fn perform(
+        &self,
+        file: &ObjectFile<'_>,
+        symbol_table: &SymbolTable,
+        section_data: &mut SectionBuilder<'_>,
+    ) -> Result<()> {
+        // Find target symbol and name
+        let (symbol_name, symbol) = file
+            .coff
+            .symbols
+            .get(self.symbol_table_index as usize)
+            .ok_or(RelocationError::SymbolIndex(self.symbol_table_index))?;
+        let symbol_name = symbol_name.map_or_else(|| symbol.name(&file.coff.strings), |s| Ok(s))?;
+
+        // Find virtual address of symbol
+        let target_address = *symbol_table
+            .0
+            .get(symbol_name)
+            .ok_or_else(|| RelocationError::SymbolAddress(symbol_name.to_string()))?;
+
+        // We are targeting Xbox so we use x86 relocations
+        use pe::relocation::*;
+        match self.typ {
+            IMAGE_REL_I386_DIR32 => section_data.relative_update_u32(
+                file.filename.as_str(),
+                self.virtual_address,
+                target_address,
+            )?,
+            IMAGE_REL_I386_REL32 => {
+                let sec_address = section_data
+                    .file_offset_start
+                    .get(file.filename.as_str())
+                    .with_context(|| {
+                        format!(
+                            "Failed to get file start offset for file '{}'",
+                            file.filename
+                        )
+                    })?
+                    + self.virtual_address;
+
+                // Calculate relative jump based on distance from the virtual address of the next instruction
+                // (AKA the value of the CPU program counter after reading this instruction) and the target
+                let from_address =
+                    sec_address + section_data.virtual_address + std::mem::size_of::<u32>() as u32;
+                section_data.relative_update_i32(
+                    file.filename.as_str(),
+                    sec_address,
+                    target_address as i32 - from_address as i32,
+                )?;
+            }
+            //TODO: Support all relocations
+            _ => bail!(
+                "Couldn't perform relocation for symbol '{}'. Relocation type {} not supported",
+                symbol_name,
+                self.typ
+            ),
+        }
+        Ok(())
+    }
+}
+
 /// Maps from a given section name to it's section data
 #[derive(Debug)]
 pub(crate) struct SectionMap<'a>(HashMap<&'a str, SectionBuilder<'a>>);
@@ -259,52 +330,14 @@ impl<'a> SectionMap<'a> {
                 };
 
                 for reloc in section.relocations(&file.bytes).unwrap_or_default() {
-                    // Find target symbol and name
-                    let (symbol_name, symbol) = file
-                        .coff
-                        .symbols
-                        .get(reloc.symbol_table_index as usize)
-                        .ok_or(RelocationError::SymbolIndex(reloc.symbol_table_index))?;
-                    let symbol_name =
-                        symbol_name.map_or_else(|| symbol.name(&file.coff.strings), |s| Ok(s))?;
-
-                    // Find virtual address of symbol
-                    let target_address = *symbol_table
-                        .0
-                        .get(symbol_name)
-                        .ok_or_else(|| RelocationError::SymbolAddress(symbol_name.to_string()))?;
-
-                    // We are targeting Xbox so we use x86 relocations
-                    match reloc.typ {
-                        goblin::pe::relocation::IMAGE_REL_I386_DIR32 => section_data
-                            .relative_update_u32(
-                                file.filename.as_str(),
-                                reloc.virtual_address,
-                                target_address,
-                            )?,
-                        goblin::pe::relocation::IMAGE_REL_I386_REL32 => {
-                            let sec_address = section_data
-                                .file_offset_start
-                                .get(file.filename.as_str())
-                                .expect(
-                                    "Failed to get file start information to process a relocation.",
-                                )
-                                + reloc.virtual_address;
-
-                            // Calculate relative jump based on distance from the virtual address of the next instruction
-                            // (AKA the value of the CPU program counter after reading this instruction) and the target
-                            let from_address = sec_address
-                                + section_data.virtual_address
-                                + std::mem::size_of::<u32>() as u32;
-                            section_data.relative_update_i32(
-                                file.filename.as_str(),
-                                sec_address,
-                                target_address as i32 - from_address as i32,
-                            )?;
-                        }
-                        //TODO: Support all relocations
-                        _ => panic!("relocation type {} not supported", reloc.typ),
-                    }
+                    reloc
+                        .perform(file, symbol_table, section_data)
+                        .with_context(|| {
+                            format!(
+                                "Failed to perform a relocation in section '{}'.",
+                                section_name,
+                            )
+                        })?;
                 }
             }
         }
@@ -390,8 +423,9 @@ impl SymbolTable {
                 None => continue,
             };
 
+            use pe::symbol::*;
             match sym.storage_class {
-                pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.typ == 0x20 => {
+                IMAGE_SYM_CLASS_EXTERNAL if sym.typ == 0x20 => {
                     let sym_name = sym.name(&obj.coff.strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
@@ -411,7 +445,7 @@ impl SymbolTable {
                         },
                     );
                 }
-                pe::symbol::IMAGE_SYM_CLASS_FUNCTION => {
+                IMAGE_SYM_CLASS_FUNCTION => {
                     let sym_name = sym.name(&obj.coff.strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
@@ -431,7 +465,7 @@ impl SymbolTable {
                         },
                     );
                 }
-                pe::symbol::IMAGE_SYM_CLASS_EXTERNAL if sym.section_number > 0 => {
+                IMAGE_SYM_CLASS_EXTERNAL if sym.section_number > 0 => {
                     self.0.insert(
                         sym.name(&obj.coff.strings)?.to_owned(),
                         match sec_data.file_offset_start.get(obj.filename.as_str()) {
@@ -440,7 +474,7 @@ impl SymbolTable {
                         },
                     );
                 }
-                pe::symbol::IMAGE_SYM_CLASS_EXTERNAL => {
+                IMAGE_SYM_CLASS_EXTERNAL => {
                     // TODO: Check if this is a link-time symbol necessary for modloader
                     // functionality.
 
@@ -448,7 +482,7 @@ impl SymbolTable {
                     // TODO: Keep up with unresolved externals for errors?
                     continue;
                 }
-                pe::symbol::IMAGE_SYM_CLASS_STATIC => {
+                IMAGE_SYM_CLASS_STATIC => {
                     self.0.insert(
                         sym.name(&obj.coff.strings)?.to_owned(),
                         match sec_data.file_offset_start.get(obj.filename.as_str()) {
@@ -457,7 +491,7 @@ impl SymbolTable {
                         },
                     );
                 }
-                pe::symbol::IMAGE_SYM_CLASS_FILE => continue,
+                IMAGE_SYM_CLASS_FILE => continue,
                 _ => bail!("storage_class {} not implemented", sym.storage_class),
             }
         }
