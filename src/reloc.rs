@@ -65,16 +65,11 @@ impl<'a> SectionBuilder<'a> {
     ) -> Result<()> {
         let mut cur = Cursor::new(&mut self.bytes);
 
-        // rust compiler is literally stupid and we need to borrow this field now
-        // in order to capture with the closure (because the closure will borrow)
-        // the entire struct
-        let name = &self.name;
-
         // find the offset of the data to update
         let d_start = self
             .file_offset_start
             .get(filename)
-            .ok_or_else(|| RelocationError::SectionOffset(name.clone()))?
+            .ok_or_else(|| RelocationError::SectionOffset(self.name.clone()))?
             + file_section_address;
 
         // read the current value, so we can add it to the new value
