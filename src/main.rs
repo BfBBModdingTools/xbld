@@ -33,7 +33,7 @@ fn parse_args() -> Cli {
     const OUTPUT: &str = "OUTPUT";
     let matches = App::new("BfBB Linker")
         .version(env!("CARGO_PKG_VERSION"))
-        .about("A linker for patching and injecting cutom code into an XBE binary.")
+        .about("A linker for patching and injecting custom code into an XBE binary.")
         .arg(Arg::from_usage(formatcp!(
             "<{}> 'Config file specifying code to be injected",
             CONFIG
