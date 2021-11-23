@@ -1,5 +1,7 @@
+use std::path::Path;
+
 use crate::{patch::Patch, ObjectFile};
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 #[derive(Debug)]
 pub struct Configuration<'a> {
@@ -8,7 +10,17 @@ pub struct Configuration<'a> {
 }
 
 impl Configuration<'_> {
-    pub fn from_toml(conf: &str) -> Result<Self> {
+    /// Reads file located at `path` and parses it as a toml formatted configuation file
+    pub fn from_file(path: &Path) -> Result<Self> {
+        let conf = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read file '{:?}'", path))?;
+
+        Self::from_toml(&conf, path)
+    }
+
+    /// Parses `conf` as a toml formatted string and creates a configuration from it. Any paths
+    /// within `conf` are treated as relative to the parent of `path`.
+    pub fn from_toml(conf: &str, path: &Path) -> Result<Self> {
         // These structs define the format of the config file
         #[derive(serde::Deserialize)]
         struct ConfToml {
@@ -22,6 +34,7 @@ impl Configuration<'_> {
             end_symbol: String,
             virtual_address: u32,
         }
+
         let conf: ConfToml = toml::from_str(conf)?;
 
         // Create patches from configuration data
@@ -31,8 +44,12 @@ impl Configuration<'_> {
             .unwrap_or_default()
             .into_iter()
             .map(|patch| {
+                let mut buf = path.to_path_buf();
+                buf.pop();
+                buf.push(Path::new(&patch.patchfile));
+
                 Patch::new(
-                    patch.patchfile.into(),
+                    buf,
                     patch.start_symbol,
                     patch.end_symbol,
                     patch.virtual_address,
@@ -45,7 +62,13 @@ impl Configuration<'_> {
             .modfiles
             .unwrap_or_default()
             .into_iter()
-            .map(|path| ObjectFile::new(path.into()))
+            .map(|mod_path| {
+                let mut buf = path.to_path_buf();
+                buf.pop();
+                buf.push(Path::new(&mod_path));
+                println!("{:?}  {:?}", path, mod_path);
+                ObjectFile::new(buf)
+            })
             .collect::<Result<_>>()?;
         Ok(Self { patches, modfiles })
     }
@@ -61,15 +84,15 @@ mod tests {
     #[test]
     fn config_parse() -> TestError {
         let toml = r#"
-            modfiles = ["test/bin/loader.o", "test/bin/mod.o"]
+            modfiles = ["loader.o", "mod.o"]
 
             [[patch]]
-            patchfile = "test/bin/framehook_patch.o"
+            patchfile = "framehook_patch.o"
             start_symbol = "_framehook_patch"
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158"#;
 
-        let config = Configuration::from_toml(toml)?;
+        let config = Configuration::from_toml(toml, Path::new("test/bin/fakefile.toml"))?;
 
         // Check patch configuration
         assert_eq!(config.patches.len(), 1);
@@ -97,18 +120,18 @@ mod tests {
             modfiles = []
 
             [[patch]]
-            patchfile = "test/bin/framehook_patch.o"
+            patchfile = "framehook_patch.o"
             start_symbol = "_framehook_patch"
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158
 
             [[patch]]
-            patchfile = "test/bin/mod.o"
+            patchfile = "mod.o"
             start_symbol = "start"
             end_symbol = "end"
             virtual_address = 1234"#;
 
-        let config = Configuration::from_toml(toml)?;
+        let config = Configuration::from_toml(toml, Path::new("test/bin/fakefile.toml"))?;
 
         // Check patch configuration
         assert_eq!(config.patches.len(), 2);

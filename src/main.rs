@@ -1,10 +1,12 @@
+use std::path::PathBuf;
+
 use anyhow::{Context, Result};
 use bfbb_linker::{config::Configuration, xbe};
 use clap::{App, Arg};
 use const_format::formatcp;
 
 struct Cli {
-    config: String,
+    config_path: PathBuf,
     input_path: String,
     output_path: String,
 }
@@ -16,12 +18,8 @@ fn main() -> Result<()> {
 }
 
 fn do_injection(cli: &Cli) -> Result<()> {
-    let config = Configuration::from_toml(
-        std::fs::read_to_string(&cli.config)
-            .with_context(|| format!("Failed to read file '{}'", cli.config.clone()))?
-            .as_str(),
-    )
-    .context(format!("Failed to parse config file '{}'", &cli.config))?;
+    let config = Configuration::from_file(&cli.config_path)
+        .with_context(|| format!("Failed to parse config file '{:?}'", &cli.config_path))?;
     let xbe: xbe::Xbe =
         bfbb_linker::inject(config, xbe::Xbe::new(&std::fs::read(&cli.input_path)?)?)?;
     std::fs::write(&cli.output_path, xbe.serialize()?)?;
@@ -51,7 +49,7 @@ fn parse_args() -> Cli {
         .get_matches();
 
     Cli {
-        config: matches.value_of(CONFIG).unwrap().to_string(),
+        config_path: matches.value_of(CONFIG).unwrap().into(),
         input_path: matches.value_of(INPUT).unwrap().to_string(),
         output_path: matches.value_of(OUTPUT).unwrap().to_string(),
     }

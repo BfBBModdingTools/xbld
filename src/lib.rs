@@ -78,6 +78,8 @@ pub fn inject(config: Configuration<'_>, mut xbe: Xbe) -> Result<Xbe> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     type TestError = std::result::Result<(), Box<dyn std::error::Error>>;
@@ -89,15 +91,15 @@ mod tests {
         use sha1::{Digest, Sha1};
 
         let toml = r#"
-            modfiles = ["test/bin/loader_stub.o"]
+            modfiles = ["loader_stub.o"]
 
             [[patch]]
-            patchfile = "test/bin/framehook_patch.o"
+            patchfile = "framehook_patch.o"
             start_symbol = "_framehook_patch"
             end_symbol = "_framehook_patch_end"
             virtual_address = 396158"#;
 
-        let config = Configuration::from_toml(toml)?;
+        let config = Configuration::from_toml(toml, Path::new("test/bin/fakefile.toml"))?;
         let output = inject(config, xbe::Xbe::new(&fs::read("test/bin/default.xbe")?)?)?;
 
         // Check that output matches expected rom
