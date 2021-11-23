@@ -8,32 +8,28 @@ use anyhow::{Context, Result};
 use config::Configuration;
 use goblin::pe::Coff;
 use reloc::{SectionMap, SymbolTable};
-use std::fs;
+use std::{fs, path::PathBuf};
 use xbe::Xbe;
 
 #[derive(Debug)]
 pub(crate) struct ObjectFile<'a> {
-    pub(crate) filename: String,
+    pub(crate) path: PathBuf,
     pub(crate) bytes: Vec<u8>,
     pub(crate) coff: Coff<'a>,
 }
 
 impl<'a> ObjectFile<'a> {
-    pub(crate) fn new(filename: String) -> Result<Self> {
-        let bytes = fs::read(filename.as_str())
-            .with_context(|| format!("Failed to read object file '{}'", filename.clone()))?;
+    pub(crate) fn new(path: PathBuf) -> Result<Self> {
+        let bytes =
+            fs::read(&path).with_context(|| format!("Failed to read object file '{:?}'", path))?;
 
         // SAFETY: We are referecing data stored on the heap that will be allocated for the
         // lifetime of this object (`'a`). Therefore we can safely extend the liftime of the
         // reference to that data to the lifetime of this object
         let coff = Coff::parse(unsafe { std::mem::transmute(&*bytes) })
-            .with_context(|| format!("Failed to parse object file '{}'", filename.clone()))?;
+            .with_context(|| format!("Failed to parse object file '{:?}'", path))?;
 
-        Ok(Self {
-            filename,
-            bytes,
-            coff,
-        })
+        Ok(Self { path, bytes, coff })
     }
 }
 
@@ -124,10 +120,9 @@ mod tests {
     // This test provides some level of confidence that the unsafe code in the ObjectFile
     // constructor is correct
     fn load_object_file() -> TestError {
-        let name = "test/bin/framehook_patch.o";
-        let obj = ObjectFile::new("test/bin/framehook_patch.o".to_string())?;
-        assert_eq!(obj.filename, name);
-        assert_eq!(obj.bytes, std::fs::read(name)?);
+        let path: PathBuf = "test/bin/framehook_patch.o".into();
+        let obj = ObjectFile::new(path.clone())?;
+        assert_eq!(obj.bytes, std::fs::read(path)?);
         Ok(())
     }
 }

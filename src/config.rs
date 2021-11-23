@@ -32,7 +32,7 @@ impl Configuration<'_> {
             .into_iter()
             .map(|patch| {
                 Patch::new(
-                    patch.patchfile,
+                    patch.patchfile.into(),
                     patch.start_symbol,
                     patch.end_symbol,
                     patch.virtual_address,
@@ -45,7 +45,7 @@ impl Configuration<'_> {
             .modfiles
             .unwrap_or_default()
             .into_iter()
-            .map(ObjectFile::new)
+            .map(|path| ObjectFile::new(path.into()))
             .collect::<Result<_>>()?;
         Ok(Self { patches, modfiles })
     }
@@ -53,6 +53,8 @@ impl Configuration<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     type TestError = std::result::Result<(), Box<dyn std::error::Error>>;
 
@@ -73,8 +75,8 @@ mod tests {
         assert_eq!(config.patches.len(), 1);
         let patch = &config.patches[0];
         assert_eq!(
-            patch.patchfile.filename,
-            "test/bin/framehook_patch.o".to_string()
+            patch.patchfile.path,
+            PathBuf::from("test/bin/framehook_patch.o")
         );
         assert_eq!(patch.start_symbol_name, "_framehook_patch".to_string());
         assert_eq!(patch.end_symbol_name, "_framehook_patch_end".to_string());
@@ -83,9 +85,9 @@ mod tests {
         // Check modfile list
         assert_eq!(config.modfiles.len(), 2);
         let modfile = &config.modfiles[0];
-        assert_eq!(modfile.filename, "test/bin/loader.o");
+        assert_eq!(modfile.path, PathBuf::from("test/bin/loader.o"));
         let modfile = &config.modfiles[1];
-        assert_eq!(modfile.filename, "test/bin/mod.o");
+        assert_eq!(modfile.path, PathBuf::from("test/bin/mod.o"));
         Ok(())
     }
 
@@ -112,14 +114,14 @@ mod tests {
         assert_eq!(config.patches.len(), 2);
         let patch = &config.patches[0];
         assert_eq!(
-            patch.patchfile.filename,
-            "test/bin/framehook_patch.o".to_string()
+            patch.patchfile.path,
+            PathBuf::from("test/bin/framehook_patch.o")
         );
         assert_eq!(patch.start_symbol_name, "_framehook_patch".to_string());
         assert_eq!(patch.end_symbol_name, "_framehook_patch_end".to_string());
         assert_eq!(patch.virtual_address, 396158);
         let patch = &config.patches[1];
-        assert_eq!(patch.patchfile.filename, "test/bin/mod.o".to_string());
+        assert_eq!(patch.patchfile.path, PathBuf::from("test/bin/mod.o"));
         assert_eq!(patch.start_symbol_name, "start".to_string());
         assert_eq!(patch.end_symbol_name, "end".to_string());
         assert_eq!(patch.virtual_address, 1234);

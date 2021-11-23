@@ -1,7 +1,10 @@
 use crate::{reloc::SymbolTable, ObjectFile, SectionMap, Xbe};
 use anyhow::{bail, Result};
 use goblin::pe::symbol::Symbol;
-use std::io::{Cursor, Write};
+use std::{
+    io::{Cursor, Write},
+    path::PathBuf,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -26,12 +29,12 @@ pub(crate) struct Patch<'a> {
 
 impl<'a> Patch<'a> {
     pub(crate) fn new(
-        filename: String,
+        path: PathBuf,
         start_symbol_name: String,
         end_symbol_name: String,
         virtual_address: u32,
     ) -> Result<Self> {
-        let patchfile = ObjectFile::new(filename)?;
+        let patchfile = ObjectFile::new(path)?;
         Ok(Self {
             patchfile,
             start_symbol_name,

@@ -8,6 +8,7 @@ use std::{
     io::Cursor,
     iter::IntoIterator,
     ops::{Deref, DerefMut},
+    path::Path,
 };
 use thiserror::Error;
 
@@ -26,7 +27,7 @@ pub enum RelocationError {
 pub(crate) struct SectionBuilder<'a> {
     name: String,
     pub(crate) bytes: Vec<u8>,
-    file_offset_start: HashMap<&'a str, u32>,
+    file_offset_start: HashMap<&'a Path, u32>,
     pub(crate) virtual_address: u32,
 }
 
@@ -43,10 +44,10 @@ impl<'a> SectionBuilder<'a> {
     /// #Panics
     ///
     /// Panics if the provided filename has already been added once.
-    fn add_bytes(&mut self, bytes: &[u8], filename: &'a str) {
+    fn add_bytes(&mut self, bytes: &[u8], filename: &'a Path) {
         if self.file_offset_start.contains_key(filename) {
             panic!(
-                "Attempted to add bytes from file '{}' to section '{}' more than once",
+                "Attempted to add bytes from file '{:?}' to section '{}' more than once",
                 filename, self.name
             );
         }
@@ -59,7 +60,7 @@ impl<'a> SectionBuilder<'a> {
     /// add `value`, and overwrite the original value with the result.
     fn relative_update_u32(
         &mut self,
-        filename: &str,
+        filename: &Path,
         file_section_address: u32,
         value: u32,
     ) -> Result<()> {
@@ -86,7 +87,7 @@ impl<'a> SectionBuilder<'a> {
     /// add `value`, and overwrite the original value with the result.
     fn relative_update_i32(
         &mut self,
-        filename: &str,
+        filename: &Path,
         file_section_address: u32,
         value: i32,
     ) -> Result<()> {
@@ -128,19 +129,16 @@ impl RelocExt for pe::relocation::Relocation {
         use pe::relocation::*;
         match self.typ {
             IMAGE_REL_I386_DIR32 => section_data.relative_update_u32(
-                file.filename.as_str(),
+                &file.path,
                 self.virtual_address,
                 target_address,
             )?,
             IMAGE_REL_I386_REL32 => {
                 let sec_address = section_data
                     .file_offset_start
-                    .get(file.filename.as_str())
+                    .get(&*file.path)
                     .with_context(|| {
-                        format!(
-                            "Failed to get file start offset for file '{}'",
-                            file.filename
-                        )
+                        format!("Failed to get file start offset for file '{:?}'", file.path)
                     })?
                     + self.virtual_address;
 
@@ -149,7 +147,7 @@ impl RelocExt for pe::relocation::Relocation {
                 let from_address =
                     sec_address + section_data.virtual_address + std::mem::size_of::<u32>() as u32;
                 section_data.relative_update_i32(
-                    file.filename.as_str(),
+                    &file.path,
                     sec_address,
                     target_address as i32 - from_address as i32,
                 )?;
@@ -224,16 +222,16 @@ impl<'a> SectionMap<'a> {
             for (sec_name, bytes) in combined_bytes.into_iter() {
                 // TODO: Logging
                 println!(
-                    "Adding section '{}' from file '{}'; {} bytes.",
+                    "Adding section '{}' from file '{:?}'; {} bytes.",
                     sec_name,
-                    file.filename,
+                    file.path,
                     bytes.len()
                 );
 
                 section_map
                     .entry(sec_name)
                     .or_insert_with(|| SectionBuilder::new(sec_name.to_string()))
-                    .add_bytes(&bytes, &file.filename);
+                    .add_bytes(&bytes, &file.path);
             }
         }
 
@@ -352,12 +350,7 @@ impl SymbolTable {
             .chain(config.modfiles.iter())
         {
             map.extract_symbols(section_map, obj, config)
-                .with_context(|| {
-                    format!(
-                        "Couldn't extract symbols from file '{}'",
-                        obj.filename.clone()
-                    )
-                })?;
+                .with_context(|| format!("Couldn't extract symbols from file '{:?}'", obj.path))?;
         }
         Ok(map)
     }
@@ -375,18 +368,18 @@ impl SymbolTable {
                     // TODO: Probably track these external symbols and produce error/warnings if
                     // unresolved
                     println!(
-                        "Skipping external symbol '{}' in file '{}'.",
+                        "Skipping external symbol '{}' in file '{:?}'.",
                         sym.name(&obj.coff.strings).unwrap_or(""),
-                        obj.filename
+                        obj.path
                     );
                     continue;
                 }
                 -2 | -1 => {
                     // TODO: Determine if these symbols are important at all
                     println!(
-                        "WARNING: Skipping symbol '{}' in file '{}' with section number {}.",
+                        "WARNING: Skipping symbol '{}' in file '{:?}' with section number {}.",
                         sym.name(&obj.coff.strings).unwrap_or(""),
-                        obj.filename,
+                        obj.path,
                         sym.section_number
                     );
                     continue;
@@ -401,8 +394,8 @@ impl SymbolTable {
                     .get(sym.section_number as usize - 1)
                     .unwrap_or_else(|| {
                         panic!(
-                            "No section for section number {} in file {}",
-                            sym.section_number, obj.filename
+                            "No section for section number {} in file {:?}",
+                            sym.section_number, obj.path
                         )
                     })
                     .name()?,
@@ -417,7 +410,7 @@ impl SymbolTable {
                     let sym_name = sym.name(&obj.coff.strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
-                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
+                        match sec_data.file_offset_start.get(&*obj.path) {
                             Some(addr) => *addr + sym.value + sec_data.virtual_address,
                             None => {
                                 if let Some(patch) = config
@@ -437,7 +430,7 @@ impl SymbolTable {
                     let sym_name = sym.name(&obj.coff.strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
-                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
+                        match sec_data.file_offset_start.get(&*obj.path) {
                             Some(addr) => *addr + sym.value + sec_data.virtual_address,
                             None => {
                                 if let Some(patch) = config
@@ -456,7 +449,7 @@ impl SymbolTable {
                 IMAGE_SYM_CLASS_EXTERNAL if sym.section_number > 0 => {
                     self.0.insert(
                         sym.name(&obj.coff.strings)?.to_owned(),
-                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
+                        match sec_data.file_offset_start.get(&*obj.path) {
                             Some(addr) => *addr + sym.value + sec_data.virtual_address,
                             None => continue,
                         },
@@ -473,7 +466,7 @@ impl SymbolTable {
                 IMAGE_SYM_CLASS_STATIC => {
                     self.0.insert(
                         sym.name(&obj.coff.strings)?.to_owned(),
-                        match sec_data.file_offset_start.get(obj.filename.as_str()) {
+                        match sec_data.file_offset_start.get(&*obj.path) {
                             Some(addr) => *addr + sec_data.virtual_address,
                             None => continue,
                         },
@@ -490,25 +483,33 @@ impl SymbolTable {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use itertools::Itertools;
 
     #[test]
     fn file_offsets() {
         let mut section = SectionBuilder::new("test".to_string());
-        section.add_bytes(&(0..12).collect_vec(), "bytesA");
-        section.add_bytes(&(0..8).collect_vec(), "bytesB");
+        let path_a: PathBuf = "bytesA".into();
+        let path_b: PathBuf = "bytesB".into();
+
+        section.add_bytes(&(0..12).collect_vec(), &path_a);
+        section.add_bytes(&(0..8).collect_vec(), &path_b);
 
         assert_eq!(section.file_offset_start.len(), 2);
-        assert_eq!(*section.file_offset_start.get("bytesA").unwrap(), 0);
-        assert_eq!(*section.file_offset_start.get("bytesB").unwrap(), 12);
+        assert_eq!(*section.file_offset_start.get(&*path_a).unwrap(), 0);
+        assert_eq!(*section.file_offset_start.get(&*path_b).unwrap(), 12);
     }
 
     #[test]
     fn add_bytes() {
         let mut section = SectionBuilder::new("test".to_string());
-        section.add_bytes(&(0..12).collect_vec(), "bytesA");
-        section.add_bytes(&(0..8).collect_vec(), "bytesB");
+        let path_a: PathBuf = "bytesA".into();
+        let path_b: PathBuf = "bytesB".into();
+
+        section.add_bytes(&(0..12).collect_vec(), &path_a);
+        section.add_bytes(&(0..8).collect_vec(), &path_b);
 
         assert_eq!(section.bytes.len(), 20);
         assert_eq!(section.bytes, (0..12).chain(0..8).collect_vec());
@@ -517,10 +518,13 @@ mod tests {
     #[test]
     fn relative_update() {
         let mut section = SectionBuilder::new("test".to_string());
-        section.add_bytes(&(0..12).collect_vec(), "bytesA");
-        section.add_bytes(&(0..8).collect_vec(), "bytesB");
+        let path_a: PathBuf = "bytesA".into();
+        let path_b: PathBuf = "bytesB".into();
 
-        section.relative_update_u32("bytesB", 0, 0x100).unwrap();
+        section.add_bytes(&(0..12).collect_vec(), &path_a);
+        section.add_bytes(&(0..8).collect_vec(), &path_b);
+
+        section.relative_update_u32(&path_b, 0, 0x100).unwrap();
         assert_eq!(
             section.bytes,
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0, 2, 2, 3, 4, 5, 6, 7]
