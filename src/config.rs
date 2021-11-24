@@ -38,8 +38,7 @@ impl Configuration<'_> {
         let conf: ConfToml = toml::from_str(conf)?;
 
         // Create patches from configuration data
-        // TODO: Warning message for empty patch list (mods will be dead code)
-        let patches = conf
+        let patches: Vec<_> = conf
             .patch
             .unwrap_or_default()
             .into_iter()
@@ -70,6 +69,11 @@ impl Configuration<'_> {
                 ObjectFile::new(buf)
             })
             .collect::<Result<_>>()?;
+
+        // TODO: Proper logging
+        if patches.is_empty() {
+            println!("WARNING: Config file contains 0 patches. Any mod code will be unaccessible.");
+        }
         Ok(Self { patches, modfiles })
     }
 }
