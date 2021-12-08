@@ -8,6 +8,7 @@ edition = "2021"
 
 [dependencies]
 clap = "2.33.3"
+xbe = { git = "https://github.com/BfBBModdingTools/xbe", branch = "main" }
 const_format = "0.2.21"
 anyhow = "1.0.44"
 thiserror = "1.0.29"

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use bfbb_linker::{config::Configuration, xbe};
+use bfbb_linker::config::Configuration;
 use clap::{App, Arg};
 use const_format::formatcp;
 

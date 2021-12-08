@@ -1,4 +1,4 @@
-use crate::{xbe, Configuration, ObjectFile};
+use crate::{Configuration, ObjectFile};
 use anyhow::{bail, Context, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use goblin::pe;

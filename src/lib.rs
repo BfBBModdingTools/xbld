@@ -2,7 +2,6 @@
 pub mod config;
 pub(crate) mod patch;
 pub(crate) mod reloc;
-pub mod xbe;
 
 use anyhow::{Context, Result};
 use config::Configuration;
