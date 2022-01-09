@@ -3,6 +3,7 @@ use anyhow::{bail, Context, Result};
 use byteorder::{ReadBytesExt, WriteBytesExt, LE};
 use goblin::pe;
 use itertools::Itertools;
+use log::{info, warn};
 use std::{
     collections::HashMap,
     io::Cursor,
@@ -220,8 +221,7 @@ impl<'a> SectionMap<'a> {
             }
 
             for (sec_name, bytes) in combined_bytes.into_iter() {
-                // TODO: Logging
-                println!(
+                info!(
                     "Adding section '{}' from file '{:?}'; {} bytes.",
                     sec_name,
                     file.path,
@@ -304,13 +304,12 @@ impl<'a> SectionMap<'a> {
                 let section_data = match self.get_mut(section_name) {
                     Some(data) => data,
                     None => {
-                        //TODO: Logging
-                        println!("WARNING: Skipping section '{}'", section_name);
+                        warn!("Skipping section '{}'", section_name);
                         continue;
                     }
                 };
 
-                println!(
+                info!(
                     "Beginning relocation processing for section '{}'",
                     section_name
                 );
@@ -362,12 +361,11 @@ impl SymbolTable {
         config: &Configuration<'_>,
     ) -> Result<()> {
         for (_, _, sym) in obj.coff.symbols.iter() {
-            // TODO: set a verbosity level for these messages when logging is implemented.
             match sym.section_number {
                 0 => {
                     // TODO: Probably track these external symbols and produce error/warnings if
                     // unresolved
-                    println!(
+                    info!(
                         "Skipping external symbol '{}' in file '{:?}'.",
                         sym.name(&obj.coff.strings).unwrap_or(""),
                         obj.path
@@ -376,7 +374,7 @@ impl SymbolTable {
                 }
                 -2 | -1 => {
                     // TODO: Determine if these symbols are important at all
-                    println!(
+                    warn!(
                         "WARNING: Skipping symbol '{}' in file '{:?}' with section number {}.",
                         sym.name(&obj.coff.strings).unwrap_or(""),
                         obj.path,

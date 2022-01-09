@@ -5,6 +5,9 @@ use bfbb_linker::config::Configuration;
 use clap::{App, Arg};
 use const_format::formatcp;
 
+use env_logger::Builder;
+use log::LevelFilter;
+
 struct Cli {
     config_path: PathBuf,
     input_path: String,
@@ -31,22 +34,38 @@ fn parse_args() -> Cli {
     const CONFIG: &str = "CONFIG";
     const INPUT: &str = "INPUT";
     const OUTPUT: &str = "OUTPUT";
+    const VERBOSITY: &str = "verbosity";
+    const QUIET: &str = "quiet";
     let matches = App::new("BfBB Linker")
         .version(env!("CARGO_PKG_VERSION"))
         .about("A linker for patching and injecting custom code into an XBE binary.")
-        .arg(Arg::from_usage(formatcp!(
-            "<{}> 'Config file specifying code to be injected",
-            CONFIG
-        )))
-        .arg(Arg::from_usage(formatcp!(
-            "<{}> 'XBE Binary to inject into'",
-            INPUT
-        )))
-        .arg(Arg::from_usage(formatcp!(
-            "<{}> 'File path to write output to'",
-            OUTPUT
-        )))
+        .args_from_usage(formatcp!(
+            "<{CONFIG}> 'Config file specifying code to be injected'
+            <{INPUT}> 'XBE Binary to inject into'
+            <{OUTPUT}> 'File path to write output to'
+            -q, --{QUIET}  'Silence all output'",
+        ))
+        .arg(
+            Arg::with_name(VERBOSITY)
+                .short("v")
+                .multiple(true)
+                .help("Increase message verbosity"),
+        )
         .get_matches();
+
+    Builder::new()
+        .filter_level(if matches.is_present(QUIET) {
+            LevelFilter::Off
+        } else {
+            match matches.occurrences_of(VERBOSITY) {
+                0 => LevelFilter::Warn,
+                1 => LevelFilter::Info,
+                2 => LevelFilter::Debug,
+                _ => LevelFilter::Trace,
+            }
+        })
+        .format_timestamp(None)
+        .init();
 
     Cli {
         config_path: matches.value_of(CONFIG).unwrap().into(),

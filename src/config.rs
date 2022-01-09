@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::{patch::Patch, ObjectFile};
 use anyhow::{Context, Result};
+use log::warn;
 
 #[derive(Debug)]
 pub struct Configuration<'a> {
@@ -70,9 +71,8 @@ impl Configuration<'_> {
             })
             .collect::<Result<_>>()?;
 
-        // TODO: Proper logging
         if patches.is_empty() {
-            println!("WARNING: Config file contains 0 patches. Any mod code will be unaccessible.");
+            warn!("WARNING: Config file contains 0 patches. Any mod code will be unaccessible.");
         }
         Ok(Self { patches, modfiles })
     }
