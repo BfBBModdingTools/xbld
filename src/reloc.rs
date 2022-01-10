@@ -375,7 +375,7 @@ impl SymbolTable {
                 -2 | -1 => {
                     // TODO: Determine if these symbols are important at all
                     warn!(
-                        "WARNING: Skipping symbol '{}' in file '{:?}' with section number {}.",
+                        "Skipping symbol '{}' in file '{:?}' with section number {}.",
                         sym.name(&obj.coff.strings).unwrap_or(""),
                         obj.path,
                         sym.section_number

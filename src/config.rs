@@ -72,7 +72,7 @@ impl Configuration<'_> {
             .collect::<Result<_>>()?;
 
         if patches.is_empty() {
-            warn!("WARNING: Config file contains 0 patches. Any mod code will be unaccessible.");
+            warn!("Config file contains 0 patches. Any mod code will be unaccessible.");
         }
         Ok(Self { patches, modfiles })
     }
