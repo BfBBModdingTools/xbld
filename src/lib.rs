@@ -6,6 +6,7 @@ pub(crate) mod reloc;
 use anyhow::{Context, Result};
 use config::Configuration;
 use goblin::pe::Coff;
+use log::info;
 use reloc::{SectionMap, SymbolTable};
 use std::{fs, path::PathBuf};
 use xbe::Xbe;
@@ -20,13 +21,14 @@ pub(crate) struct ObjectFile<'a> {
 impl<'a> ObjectFile<'a> {
     pub(crate) fn new(path: PathBuf) -> Result<Self> {
         let bytes =
-            fs::read(&path).with_context(|| format!("Failed to read object file '{:?}'", path))?;
+            fs::read(&path).with_context(|| format!("Failed to read object file '{path:?}'"))?;
 
         // SAFETY: We are referecing data stored on the heap that will be allocated for the
         // lifetime of this object (`'a`). Therefore we can safely extend the liftime of the
         // reference to that data to the lifetime of this object
+        info!("Parsing ObjectFile '{path:?}'");
         let coff = Coff::parse(unsafe { std::mem::transmute(&*bytes) })
-            .with_context(|| format!("Failed to parse object file '{:?}'", path))?;
+            .with_context(|| format!("Failed to parse object file '{path:?}'"))?;
 
         Ok(Self { path, bytes, coff })
     }

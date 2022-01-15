@@ -14,7 +14,7 @@ impl Configuration<'_> {
     /// Reads file located at `path` and parses it as a toml formatted configuation file
     pub fn from_file(path: &Path) -> Result<Self> {
         let conf = std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read file '{:?}'", path))?;
+            .with_context(|| format!("Failed to read file '{path:?}'"))?;
 
         Self::from_toml(&conf, path)
     }
@@ -66,7 +66,6 @@ impl Configuration<'_> {
                 let mut buf = path.to_path_buf();
                 buf.pop();
                 buf.push(Path::new(&mod_path));
-                println!("{:?}  {:?}", path, mod_path);
                 ObjectFile::new(buf)
             })
             .collect::<Result<_>>()?;

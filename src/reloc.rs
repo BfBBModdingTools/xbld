@@ -48,8 +48,8 @@ impl<'a> SectionBuilder<'a> {
     fn add_bytes(&mut self, bytes: &[u8], filename: &'a Path) {
         if self.file_offset_start.contains_key(filename) {
             panic!(
-                "Attempted to add bytes from file '{:?}' to section '{}' more than once",
-                filename, self.name
+                "Attempted to add bytes from file '{filename:?}' to section '{}' more than once",
+                self.name
             );
         }
         self.file_offset_start
@@ -304,24 +304,18 @@ impl<'a> SectionMap<'a> {
                 let section_data = match self.get_mut(section_name) {
                     Some(data) => data,
                     None => {
-                        warn!("Skipping section '{}'", section_name);
+                        warn!("Skipping section '{section_name}'");
                         continue;
                     }
                 };
 
-                info!(
-                    "Beginning relocation processing for section '{}'",
-                    section_name
-                );
+                info!("Beginning relocation processing for section '{section_name}.'");
 
                 for reloc in section.relocations(&file.bytes).unwrap_or_default() {
                     reloc
                         .perform(file, symbol_table, section_data)
                         .with_context(|| {
-                            format!(
-                                "Failed to perform a relocation in section '{}'.",
-                                section_name,
-                            )
+                            format!("Failed to perform a relocation in section '{section_name}'.")
                         })?;
                 }
             }
