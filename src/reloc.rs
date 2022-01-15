@@ -118,7 +118,7 @@ impl RelocExt for pe::relocation::Relocation {
             .symbols
             .get(self.symbol_table_index as usize)
             .ok_or(RelocationError::SymbolIndex(self.symbol_table_index))?;
-        let symbol_name = symbol_name.map_or_else(|| symbol.name(&file.coff.strings), |s| Ok(s))?;
+        let symbol_name = symbol_name.map_or_else(|| symbol.name(&file.coff.strings), Ok)?;
 
         // Find virtual address of symbol
         let target_address = *symbol_table
