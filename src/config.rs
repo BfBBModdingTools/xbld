@@ -2,11 +2,16 @@ use std::path::Path;
 
 use crate::{patch::Patch, ObjectFile};
 use anyhow::{Context, Result};
-use log::warn;
+use log::{info, warn};
+use toml::Value;
+
+#[derive(Debug)]
+pub struct Symbol(pub(crate) String, pub(crate) u32);
 
 #[derive(Debug)]
 pub struct Configuration<'a> {
     pub(crate) patches: Vec<Patch<'a>>,
+    pub(crate) symbols: Vec<Symbol>,
     pub(crate) modfiles: Vec<ObjectFile<'a>>,
 }
 
@@ -36,6 +41,14 @@ impl Configuration<'_> {
             virtual_address: u32,
         }
 
+        let mut sym_list = vec![];
+        let value = conf.parse::<Value>()?;
+        if let Some(symbols) = value["symbols"].as_table() {
+            symbols.iter().for_each(|(k, v)| {
+                info!("Adding override symbol '{k}' with address '{v}'");
+                sym_list.push(Symbol(k.to_string(), v.as_integer().unwrap() as u32));
+            });
+        }
         let conf: ConfToml = toml::from_str(conf)?;
 
         // Create patches from configuration data
@@ -73,7 +86,11 @@ impl Configuration<'_> {
         if patches.is_empty() {
             warn!("Config file contains 0 patches. Any mod code will be unaccessible.");
         }
-        Ok(Self { patches, modfiles })
+        Ok(Self {
+            patches,
+            symbols: sym_list,
+            modfiles,
+        })
     }
 }
 

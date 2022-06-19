@@ -65,6 +65,7 @@ impl<'a> SectionBuilder<'a> {
         file_section_address: u32,
         value: u32,
     ) -> Result<()> {
+        let len = self.bytes.len();
         let mut cur = Cursor::new(&mut self.bytes);
 
         // find the offset of the data to update
@@ -76,11 +77,14 @@ impl<'a> SectionBuilder<'a> {
 
         // read the current value, so we can add it to the new value
         cur.set_position(d_start as u64);
-        let offset = cur.read_u32::<LE>()?;
+        let offset = cur.read_u32::<LE>().context(format!(
+            "fsa {file_section_address} d_start {d_start}, size {len}"
+        ))?;
         cur.set_position(d_start as u64);
 
         // update data
-        cur.write_u32::<LE>(value.wrapping_add(offset))?;
+        cur.write_u32::<LE>(value.wrapping_add(offset))
+            .context("2")?;
         Ok(())
     }
 
@@ -147,11 +151,19 @@ impl RelocExt for pe::relocation::Relocation {
                 // (AKA the value of the CPU program counter after reading this instruction) and the target
                 let from_address =
                     sec_address + section_data.virtual_address + std::mem::size_of::<u32>() as u32;
-                section_data.relative_update_i32(
-                    &file.path,
-                    sec_address,
-                    target_address as i32 - from_address as i32,
-                )?;
+                let value = target_address as i32 - from_address as i32;
+                section_data
+                    .relative_update_i32(&file.path, self.virtual_address, value)
+                    .with_context(|| {
+                        format!(
+                            "Failed to perform relative relocation for symbol '{symbol_name}'.\n\t\
+                            File: {:?}\n\t\
+                            Section Address: '{sec_address:#X}'\n\t\
+                            Value: '{value:#X}'\n\t\
+                            {}",
+                            file.path, self.virtual_address
+                        )
+                    })?;
             }
             //TODO: Support all relocations
             _ => bail!(
@@ -315,7 +327,7 @@ impl<'a> SectionMap<'a> {
                     reloc
                         .perform(file, symbol_table, section_data)
                         .with_context(|| {
-                            format!("Failed to perform a relocation in section '{section_name}'.")
+                            format!("Failed to perform a relocation in section '{section_name}' of file '{:?}'.\n{reloc:?}", file.path)
                         })?;
                 }
             }
@@ -344,6 +356,9 @@ impl SymbolTable {
         {
             map.extract_symbols(section_map, obj, config)
                 .with_context(|| format!("Couldn't extract symbols from file '{:?}'", obj.path))?;
+        }
+        for sym in config.symbols.iter() {
+            map.0.insert(sym.0.clone(), sym.1);
         }
         Ok(map)
     }
