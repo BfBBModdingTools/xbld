@@ -3,11 +3,11 @@ name = "bfbb_linker"
 version = "0.1.0"
 authors = ["Steven Casper <sebastiancasper3@gmail.com>"]
 edition = "2021"
+description = "A linker for patching and injecting custom code into an XBE binary."
 
 [dependencies]
 # CLI
-clap = "2.33.3"
-const_format = "0.2.21"
+clap = { version = "3.0", features=["derive"] }
 
 # Logging
 log = "0.4.0"
