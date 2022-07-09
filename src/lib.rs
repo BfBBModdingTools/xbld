@@ -14,20 +14,22 @@ use xbe::Xbe;
 #[derive(Debug)]
 pub(crate) struct ObjectFile<'a> {
     pub(crate) path: PathBuf,
-    pub(crate) bytes: Vec<u8>,
+    pub(crate) bytes: Box<[u8]>,
     pub(crate) coff: Coff<'a>,
 }
 
 impl<'a> ObjectFile<'a> {
     pub(crate) fn new(path: PathBuf) -> Result<Self> {
-        let bytes =
-            fs::read(&path).with_context(|| format!("Failed to read object file '{path:?}'"))?;
+        let bytes = fs::read(&path)
+            .with_context(|| format!("Failed to read object file '{path:?}'"))?
+            .into_boxed_slice();
 
         // SAFETY: We are referecing data stored on the heap that will be allocated for the
-        // lifetime of this object (`'a`). Therefore we can safely extend the liftime of the
-        // reference to that data to the lifetime of this object
+        // lifetime of this object (`'a`). The data is owned by a `Box` which will never
+        // reallocate. Therefore we can safely extend the liftime of the reference to that
+        // data to the lifetime of this object.
         info!("Parsing ObjectFile '{path:?}'");
-        let coff = Coff::parse(unsafe { std::mem::transmute(&*bytes) })
+        let coff = Coff::parse(unsafe { &*(&*bytes as *const [u8]) })
             .with_context(|| format!("Failed to parse object file '{path:?}'"))?;
 
         Ok(Self { path, bytes, coff })
@@ -125,7 +127,7 @@ mod tests {
     fn load_object_file() -> TestError {
         let path: PathBuf = "test/bin/framehook_patch.o".into();
         let obj = ObjectFile::new(path.clone())?;
-        assert_eq!(obj.bytes, std::fs::read(path)?);
+        assert_eq!(obj.bytes, std::fs::read(path)?.into_boxed_slice());
         Ok(())
     }
 }
