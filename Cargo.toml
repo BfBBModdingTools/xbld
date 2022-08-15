@@ -27,4 +27,4 @@ itertools = "0.10"
 thiserror = "1"
 
 [dev-dependencies]
-sha-1="0.9"
+sha-1="0.10"
