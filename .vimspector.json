@@ -12,7 +12,7 @@
                 "type": "lldb",
                 "request": "launch",
                 "name": "Run Cli",
-                "program": "${workspaceFolder}/target/debug/bfbb_linker",
+                "program": "${workspaceFolder}/target/debug/xbld",
                 "args": ["*${CmdArgs}"],
                 "sourceLanguages": ["rust"]
             }

@@ -1,6 +1,6 @@
-# BfBB Linker
+# Xbox Linker
 
-This repository contains a WIP linker for injecting code into existing executables for the Microsoft Xbox. It takes COFF format object files as input. The project is currently only tested with SpongeBob SquarePants: Battle for Bikini Bottom (2003). It is intended to be usable for any xbox executable (XBE), but likely currently makes assumptions that won't be compatible with some executables.
+`xbld` is a work-in-progress linker for injecting code into existing executables for the Microsoft Xbox. It takes COFF format object files as input. The project is currently only tested with _SpongeBob SquarePants: Battle for Bikini Bottom_. It is intended to be usable for any xbox executable (XBE), but likely currently makes assumptions that won't be compatible with some executables.
 
 The linker works by taking the .text, .data, .rdata, and .bss sections from it's input files and placing them into new .mtext, .mdata, .mrdata, and .mbss sections at the end of the executable. Patches can be defined to overwrite parts of existing sections to be able to hook into the new code. Various parts of the XBE's headers have to be updated to account for the new sections.
 
@@ -25,8 +25,8 @@ The project is still in very early development and not yet intended for actual u
 
 ### Testing
 
-- Testing requires a clean executable of *SpongeBob SquarePants: Battle for Bikini Bottom* to be located at `bin/default.xbe`. Acquiring this file is up to you.
-    - sha1sum: `a9ac855c4ee8b41b661c3578c959c024f1068c47`
+- Testing requires a clean executable of _SpongeBob SquarePants: Battle for Bikini Bottom_ to be located at `bin/default.xbe`. Acquiring this file is up to you.
+  - sha1sum: `a9ac855c4ee8b41b661c3578c959c024f1068c47`
 
 ## Contributions
 

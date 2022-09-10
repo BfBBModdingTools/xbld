@@ -1,5 +1,5 @@
 [package]
-name = "bfbb_linker"
+name = "xbld"
 version = "0.1.0"
 authors = ["Steven Casper <sebastiancasper3@gmail.com>"]
 edition = "2021"
