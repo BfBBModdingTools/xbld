@@ -1,12 +1,11 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use bfbb_linker::config::Configuration;
 use clap::Parser;
 use log::LevelFilter;
+use xbld::config::Configuration;
 
 #[derive(Debug, Parser)]
-#[clap(name = "BfBB Linker")]
 #[clap(about, author, version)]
 struct Cli {
     #[clap(value_parser)]
@@ -49,7 +48,7 @@ fn main() -> Result<()> {
 fn do_injection(cli: &Cli) -> Result<()> {
     let config = Configuration::from_file(&cli.config)
         .with_context(|| format!("Failed to parse config file '{:?}'", &cli.config))?;
-    let xbe: xbe::Xbe = bfbb_linker::inject(config, xbe::Xbe::new(&std::fs::read(&cli.input)?)?)?;
+    let xbe: xbe::Xbe = xbld::inject(config, xbe::Xbe::new(&std::fs::read(&cli.input)?)?)?;
     std::fs::write(&cli.output, xbe.serialize()?)?;
 
     Ok(())
