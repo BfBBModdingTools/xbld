@@ -5,12 +5,12 @@ use anyhow::{Context, Result};
 use log::warn;
 
 #[derive(Debug)]
-pub struct Configuration<'a> {
-    pub(crate) patches: Vec<Patch<'a>>,
-    pub(crate) modfiles: Vec<ObjectFile<'a>>,
+pub struct Configuration {
+    pub(crate) patches: Vec<Patch>,
+    pub(crate) modfiles: Vec<ObjectFile>,
 }
 
-impl Configuration<'_> {
+impl Configuration {
     /// Reads file located at `path` and parses it as a toml formatted configuation file
     pub fn from_file(path: &Path) -> Result<Self> {
         let conf = std::fs::read_to_string(path)

@@ -8,31 +8,62 @@ use config::Configuration;
 use goblin::pe::Coff;
 use log::info;
 use reloc::{SectionMap, SymbolTable};
-use std::{fs, path::PathBuf};
+use std::{fmt::Debug, fs, ops::Deref, path::PathBuf};
 use xbe::Xbe;
+use yoke::{Yoke, Yokeable};
 
-#[derive(Debug)]
-pub(crate) struct ObjectFile<'a> {
-    pub(crate) path: PathBuf,
-    pub(crate) bytes: Box<[u8]>,
-    pub(crate) coff: Coff<'a>,
+#[derive(Yokeable)]
+struct YokeableCoff<'a>(Coff<'a>);
+
+impl<'a> Deref for YokeableCoff<'a> {
+    type Target = Coff<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
-impl<'a> ObjectFile<'a> {
+impl<'a> From<Coff<'a>> for YokeableCoff<'a> {
+    fn from(v: Coff<'a>) -> Self {
+        Self(v)
+    }
+}
+
+pub(crate) struct ObjectFile {
+    pub(crate) path: PathBuf,
+    coff: Yoke<YokeableCoff<'static>, Box<[u8]>>,
+}
+
+impl Debug for ObjectFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectFile")
+            .field("path", &self.path)
+            .field("coff", &self.coff())
+            .finish()
+    }
+}
+
+impl ObjectFile {
     pub(crate) fn new(path: PathBuf) -> Result<Self> {
         let bytes = fs::read(&path)
             .with_context(|| format!("Failed to read object file '{path:?}'"))?
             .into_boxed_slice();
 
-        // SAFETY: We are referecing data stored on the heap that will be allocated for the
-        // lifetime of this object (`'a`). The data is owned by a `Box` which will never
-        // reallocate. Therefore we can safely extend the liftime of the reference to that
-        // data to the lifetime of this object.
         info!("Parsing ObjectFile '{path:?}'");
-        let coff = Coff::parse(unsafe { &*(&*bytes as *const [u8]) })
+        let coff = Yoke::try_attach_to_cart(bytes, |b| Coff::parse(b).map(|coff| coff.into()))
             .with_context(|| format!("Failed to parse object file '{path:?}'"))?;
 
-        Ok(Self { path, bytes, coff })
+        Ok(Self { path, coff })
+    }
+
+    #[inline]
+    pub(crate) fn coff(&self) -> &Coff<'_> {
+        self.coff.get()
+    }
+
+    #[inline]
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.coff.backing_cart()
     }
 }
 
@@ -49,7 +80,7 @@ impl<'a> ObjectFile<'a> {
 /// - process relocations within each file
 /// - process base game patch files
 /// - insert sections into xbe
-pub fn inject(config: Configuration<'_>, mut xbe: Xbe) -> Result<Xbe> {
+pub fn inject(config: Configuration, mut xbe: Xbe) -> Result<Xbe> {
     // combine sections
     let mut section_map = SectionMap::from_data(&config.modfiles);
 
@@ -118,16 +149,6 @@ mod tests {
         };
 
         assert_eq!(target_hash, actual_hash);
-        Ok(())
-    }
-
-    #[test]
-    // This test provides some level of confidence that the unsafe code in the ObjectFile
-    // constructor is correct
-    fn load_object_file() -> TestError {
-        let path: PathBuf = "test/bin/framehook_patch.o".into();
-        let obj = ObjectFile::new(path.clone())?;
-        assert_eq!(obj.bytes, std::fs::read(path)?.into_boxed_slice());
         Ok(())
     }
 }
