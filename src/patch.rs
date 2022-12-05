@@ -20,14 +20,14 @@ pub enum PatchError {
 }
 
 #[derive(Debug)]
-pub(crate) struct Patch<'a> {
-    pub(crate) patchfile: ObjectFile<'a>,
+pub(crate) struct Patch {
+    pub(crate) patchfile: ObjectFile,
     pub(crate) start_symbol_name: String,
     pub(crate) end_symbol_name: String,
     pub(crate) virtual_address: u32,
 }
 
-impl<'a> Patch<'a> {
+impl Patch {
     pub(crate) fn new(
         path: PathBuf,
         start_symbol_name: String,
@@ -53,7 +53,7 @@ impl<'a> Patch<'a> {
 
         let sec_name = self
             .patchfile
-            .coff
+            .coff()
             .sections
             .get(start_symbol.section_number as usize - 1)
             .unwrap()
@@ -86,11 +86,11 @@ impl<'a> Patch<'a> {
     fn find_symbol(&self, name: &str) -> Result<Symbol> {
         let sym = self
             .patchfile
-            .coff
+            .coff()
             .symbols
             .iter()
             .find(|(_, n, sym)| {
-                n.unwrap_or_else(|| sym.name(&self.patchfile.coff.strings).unwrap_or_default())
+                n.unwrap_or_else(|| sym.name(&self.patchfile.coff().strings).unwrap_or_default())
                     == name
             })
             .map(|(_, _, sym)| sym)

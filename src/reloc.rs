@@ -99,7 +99,7 @@ impl<'a> SectionBuilder<'a> {
 trait RelocExt {
     fn perform(
         &self,
-        file: &ObjectFile<'_>,
+        file: &ObjectFile,
         symbol_table: &SymbolTable,
         section_data: &mut SectionBuilder<'_>,
     ) -> Result<()>;
@@ -108,17 +108,17 @@ trait RelocExt {
 impl RelocExt for pe::relocation::Relocation {
     fn perform(
         &self,
-        file: &ObjectFile<'_>,
+        file: &ObjectFile,
         symbol_table: &SymbolTable,
         section_data: &mut SectionBuilder<'_>,
     ) -> Result<()> {
         // Find target symbol and name
         let (symbol_name, symbol) = file
-            .coff
+            .coff()
             .symbols
             .get(self.symbol_table_index as usize)
             .ok_or(RelocationError::SymbolIndex(self.symbol_table_index))?;
-        let symbol_name = symbol_name.map_or_else(|| symbol.name(&file.coff.strings), Ok)?;
+        let symbol_name = symbol_name.map_or_else(|| symbol.name(&file.coff().strings), Ok)?;
 
         // Find virtual address of symbol
         let target_address = *symbol_table
@@ -192,12 +192,12 @@ impl<'a> IntoIterator for SectionMap<'a> {
 }
 
 impl<'a> SectionMap<'a> {
-    pub(crate) fn from_data(files: &'a [ObjectFile<'_>]) -> Self {
+    pub(crate) fn from_data(files: &'a [ObjectFile]) -> Self {
         let mut section_map = HashMap::new();
         for file in files.iter() {
             let mut combined_bytes = HashMap::new();
             for sec in file
-                .coff
+                .coff()
                 .sections
                 .iter()
                 .filter(|s| s.size_of_raw_data != 0)
@@ -212,7 +212,7 @@ impl<'a> SectionMap<'a> {
 
                 let start = sec.pointer_to_raw_data as usize;
                 let end = start + sec.size_of_raw_data as usize;
-                let data = &file.bytes[start..end];
+                let data = &file.bytes()[start..end];
 
                 combined_bytes
                     .entry(sec_name)
@@ -294,10 +294,10 @@ impl<'a> SectionMap<'a> {
     pub(crate) fn process_relocations(
         &mut self,
         symbol_table: &SymbolTable,
-        files: &[ObjectFile<'_>],
+        files: &[ObjectFile],
     ) -> Result<()> {
         for file in files.iter() {
-            for section in file.coff.sections.iter() {
+            for section in file.coff().sections.iter() {
                 // find data to update
                 // TODO: This is assuming 32 bit relocations
                 let section_name = section.name()?;
@@ -311,7 +311,7 @@ impl<'a> SectionMap<'a> {
 
                 info!("Beginning relocation processing for section '{section_name}.'");
 
-                for reloc in section.relocations(&file.bytes).unwrap_or_default() {
+                for reloc in section.relocations(file.bytes()).unwrap_or_default() {
                     reloc
                         .perform(file, symbol_table, section_data)
                         .with_context(|| {
@@ -333,7 +333,7 @@ pub(crate) struct SymbolTable(HashMap<String, u32>);
 impl SymbolTable {
     pub(crate) fn new(
         section_map: &SectionMap<'_>,
-        config: &Configuration<'_>,
+        config: &Configuration,
     ) -> anyhow::Result<Self> {
         let mut map = Self(HashMap::new());
         for obj in config
@@ -351,17 +351,17 @@ impl SymbolTable {
     fn extract_symbols(
         &mut self,
         section_map: &SectionMap<'_>,
-        obj: &ObjectFile<'_>,
-        config: &Configuration<'_>,
+        obj: &ObjectFile,
+        config: &Configuration,
     ) -> Result<()> {
-        for (_, _, sym) in obj.coff.symbols.iter() {
+        for (_, _, sym) in obj.coff().symbols.iter() {
             match sym.section_number {
                 0 => {
                     // TODO: Probably track these external symbols and produce error/warnings if
                     // unresolved
                     info!(
                         "Skipping external symbol '{}' in file '{:?}'.",
-                        sym.name(&obj.coff.strings).unwrap_or(""),
+                        sym.name(&obj.coff().strings).unwrap_or(""),
                         obj.path
                     );
                     continue;
@@ -370,7 +370,7 @@ impl SymbolTable {
                     // TODO: Determine if these symbols are important at all
                     warn!(
                         "Skipping symbol '{}' in file '{:?}' with section number {}.",
-                        sym.name(&obj.coff.strings).unwrap_or(""),
+                        sym.name(&obj.coff().strings).unwrap_or(""),
                         obj.path,
                         sym.section_number
                     );
@@ -381,7 +381,7 @@ impl SymbolTable {
 
             // Get section data from table
             let sec_data = match section_map.get(
-                obj.coff
+                obj.coff()
                     .sections
                     .get(sym.section_number as usize - 1)
                     .unwrap_or_else(|| {
@@ -399,7 +399,7 @@ impl SymbolTable {
             use pe::symbol::*;
             match sym.storage_class {
                 IMAGE_SYM_CLASS_EXTERNAL if sym.typ == 0x20 => {
-                    let sym_name = sym.name(&obj.coff.strings)?;
+                    let sym_name = sym.name(&obj.coff().strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
                         match sec_data.file_offset_start.get(&*obj.path) {
@@ -419,7 +419,7 @@ impl SymbolTable {
                     );
                 }
                 IMAGE_SYM_CLASS_FUNCTION => {
-                    let sym_name = sym.name(&obj.coff.strings)?;
+                    let sym_name = sym.name(&obj.coff().strings)?;
                     self.0.insert(
                         sym_name.to_owned(),
                         match sec_data.file_offset_start.get(&*obj.path) {
@@ -440,7 +440,7 @@ impl SymbolTable {
                 }
                 IMAGE_SYM_CLASS_EXTERNAL if sym.section_number > 0 => {
                     self.0.insert(
-                        sym.name(&obj.coff.strings)?.to_owned(),
+                        sym.name(&obj.coff().strings)?.to_owned(),
                         match sec_data.file_offset_start.get(&*obj.path) {
                             Some(addr) => *addr + sym.value + sec_data.virtual_address,
                             None => continue,
@@ -457,7 +457,7 @@ impl SymbolTable {
                 }
                 IMAGE_SYM_CLASS_STATIC => {
                     self.0.insert(
-                        sym.name(&obj.coff.strings)?.to_owned(),
+                        sym.name(&obj.coff().strings)?.to_owned(),
                         match sec_data.file_offset_start.get(&*obj.path) {
                             Some(addr) => *addr + sec_data.virtual_address,
                             None => continue,
