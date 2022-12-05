@@ -1,71 +1,13 @@
 #![warn(rust_2018_idioms)]
 pub mod config;
+pub mod obj;
 pub(crate) mod patch;
 pub(crate) mod reloc;
 
 use anyhow::{Context, Result};
 use config::Configuration;
-use goblin::pe::Coff;
-use log::info;
 use reloc::{SectionMap, SymbolTable};
-use std::{fmt::Debug, fs, ops::Deref, path::PathBuf};
 use xbe::Xbe;
-use yoke::{Yoke, Yokeable};
-
-#[derive(Yokeable)]
-struct YokeableCoff<'a>(Coff<'a>);
-
-impl<'a> Deref for YokeableCoff<'a> {
-    type Target = Coff<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<'a> From<Coff<'a>> for YokeableCoff<'a> {
-    fn from(v: Coff<'a>) -> Self {
-        Self(v)
-    }
-}
-
-pub(crate) struct ObjectFile {
-    pub(crate) path: PathBuf,
-    coff: Yoke<YokeableCoff<'static>, Box<[u8]>>,
-}
-
-impl Debug for ObjectFile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ObjectFile")
-            .field("path", &self.path)
-            .field("coff", &self.coff())
-            .finish()
-    }
-}
-
-impl ObjectFile {
-    pub(crate) fn new(path: PathBuf) -> Result<Self> {
-        let bytes = fs::read(&path)
-            .with_context(|| format!("Failed to read object file '{path:?}'"))?
-            .into_boxed_slice();
-
-        info!("Parsing ObjectFile '{path:?}'");
-        let coff = Yoke::try_attach_to_cart(bytes, |b| Coff::parse(b).map(|coff| coff.into()))
-            .with_context(|| format!("Failed to parse object file '{path:?}'"))?;
-
-        Ok(Self { path, coff })
-    }
-
-    #[inline]
-    pub(crate) fn coff(&self) -> &Coff<'_> {
-        self.coff.get()
-    }
-
-    #[inline]
-    pub(crate) fn bytes(&self) -> &[u8] {
-        self.coff.backing_cart()
-    }
-}
 
 /// How to inject
 /// - separate patch files from other object files
@@ -112,9 +54,9 @@ pub fn inject(config: Configuration, mut xbe: Xbe) -> Result<Xbe> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{fs, path::Path};
 
-    use super::*;
+    use crate::{config::Configuration, inject};
 
     type TestError = std::result::Result<(), Box<dyn std::error::Error>>;
 

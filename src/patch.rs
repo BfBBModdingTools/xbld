@@ -1,4 +1,4 @@
-use crate::{reloc::SymbolTable, ObjectFile, SectionMap, Xbe};
+use crate::{obj::ObjectFile, reloc::SymbolTable, SectionMap, Xbe};
 use anyhow::{bail, Result};
 use goblin::pe::symbol::Symbol;
 use std::{

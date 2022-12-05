@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{patch::Patch, ObjectFile};
+use crate::{obj::ObjectFile, patch::Patch};
 use anyhow::{Context, Result};
 use log::warn;
 
