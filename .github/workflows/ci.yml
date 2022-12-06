@@ -33,11 +33,12 @@ jobs:
         with:
           command: test
           args: --profile=ci --all-features --no-run --locked
-      - name: Test
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --profile=ci --all-features
+      # TODO: Make tests runnable in CI
+      # - name: Test
+      #   uses: actions-rs/cargo@v1
+      #   with:
+      #     command: test
+      #     args: --profile=ci --all-features
       - name: Deny all clippy warnings
         uses: actions-rs/cargo@v1
         with:
