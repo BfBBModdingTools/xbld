@@ -12,7 +12,7 @@ goblin = "0.5"
 byteorder = "1"
 
 # CLI
-clap = { version = "3", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 
 # Logging
 log = "0.4"
