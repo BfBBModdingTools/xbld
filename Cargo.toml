@@ -16,7 +16,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Logging
 log = "0.4"
-env_logger = "0.9"
+env_logger = "0.10"
 
 # Mod Configuration
 toml = "0.5"
