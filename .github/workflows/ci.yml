@@ -5,6 +5,13 @@ on:
   pull_request:
 
 name: Continuous Integration
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
 
 jobs:
   ci:
@@ -17,17 +24,28 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
-      - run: rustup component add rustfmt
-      - run: rustup component add clippy
-      - uses: actions-rs/cargo@v1
+      - name: Add rustup components
+        run: rustup component add rustfmt && rustup component add clippy
+      - name: Setup build cache
+        uses: Swatinem/rust-cache@v2
+      - name: Build
+        uses: actions-rs/cargo@v1
         with:
-          command: fmt
-          args: --all -- --check
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --all
-      - uses: actions-rs/cargo@v1
+          command: test
+          args: --profile=ci --all-features --no-run --locked
+      # TODO: Make tests runnable in CI
+      # - name: Test
+      #   uses: actions-rs/cargo@v1
+      #   with:
+      #     command: test
+      #     args: --profile=ci --all-features
+      - name: Deny all clippy warnings
+        uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --all -- -D warnings
+          args: --profile=ci --all-features --tests
+      - name: Check code formatting
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: -- --check

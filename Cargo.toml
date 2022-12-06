@@ -29,3 +29,8 @@ yoke = { version = "0.6.2", features = ["derive"] }
 
 [dev-dependencies]
 sha-1 = "0.10"
+
+# Optimize CI for build-times
+[profile.ci]
+inherits = "dev"
+debug = 0
