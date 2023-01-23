@@ -19,7 +19,7 @@ log = "0.4"
 env_logger = "0.10"
 
 # Mod Configuration
-toml = "0.5"
+toml = "0.6"
 serde = { version = "1", features = ["derive"] }
 
 anyhow = "1"
