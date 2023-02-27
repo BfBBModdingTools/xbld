@@ -8,7 +8,7 @@ description = "A linker for patching and injecting custom code into an XBE binar
 [dependencies]
 # Binary Parsing/Modification
 xbe = { git = "https://github.com/BfBBModdingTools/xbe", branch = "main" }
-goblin = "0.5"
+goblin = "0.6"
 byteorder = "1"
 
 # CLI
